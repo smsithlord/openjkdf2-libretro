@@ -39,14 +39,20 @@ settings, and checkpoints into this folder.
 
 ## Running
 
+The standard test environment is a portable RetroArch at `tools/RetroArch-Win64/`
+(gitignored; RetroArch 1.21.0), preconfigured with the `gl` driver, auto Game
+Focus, and the UDP command interface (`SCREENSHOT` on port 55355 is how automated
+tests capture frames):
+
 ```
-retroarch -L openjkdf2_libretro.dll "<basefolder>\episode\JK1.GOB" --verbose
+tools\RetroArch-Win64\retroarch.exe -L build_libretro\Release\openjkdf2_libretro.dll "testdata\jk1\episode\JK1.GOB" --verbose
 ```
 
 - RetroArch's **video driver must be `gl` or `glcore`** (Settings → Drivers).
   The core requests an OpenGL 3.3 core context; d3d/vulkan drivers refuse it.
-- The game is keyboard+mouse heavy: enable **Game Focus** (Scroll Lock) so
-  RetroArch passes the full keyboard through.
+- The game is keyboard+mouse heavy: **Game Focus** (Scroll Lock, or the
+  preconfigured auto mode) is required so keys like ESC (skip cutscene, menu
+  back) reach the game instead of RetroArch's hotkeys.
 - MoTS: load a `.goo` episode file (untested until M3).
 
 ## Current limitations (M0)
