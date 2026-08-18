@@ -1201,7 +1201,10 @@ void Window_SdlUpdate()
         if (sampleTime_delay >= menu_framelimit_amt_ms) {
             sampleTime_delay = menu_framelimit_amt_ms;
         }
+#ifndef LIBRETRO_BUILD
+        // Libretro: the frontend paces frames; sleeping here just eats frame budget.
         SDL_Delay(sampleTime_delay);
+#endif
     }
     else
     {

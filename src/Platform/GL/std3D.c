@@ -97,6 +97,17 @@ typedef struct std3DFramebuffer
 GLint std3D_windowFbo = 0;
 std3DFramebuffer std3D_framebuffers[2];
 std3DFramebuffer *std3D_pFb = NULL;
+GLuint std3D_globalVao = 0;
+
+#ifdef LIBRETRO_BUILD
+// Libretro: the frontend's compositor changes the VAO binding between frames;
+// the renderer binds its sole VAO once at init and assumes it stays bound.
+void std3D_RebindVAO(void)
+{
+    if (std3D_globalVao)
+        glBindVertexArray(std3D_globalVao);
+}
+#endif
 
 #ifdef LIBRETRO_BUILD
 // Libretro HW render: the frontend owns the output framebuffer and its handle
@@ -636,9 +647,12 @@ int init_resources()
     
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, 4, 4, 0, GL_RGB, GL_FLOAT, tiledrand_data);
 
-    unsigned int vao;
-    glGenVertexArrays( 1, &vao );
-    glBindVertexArray( vao ); 
+    // File-scope (was a discarded local): core-profile GL requires this VAO
+    // bound for every attribute/draw call the renderer makes, and under a
+    // libretro frontend the compositor switches VAOs between frames -- the
+    // core rebinds it each frame via std3D_RebindVAO.
+    glGenVertexArrays( 1, &std3D_globalVao );
+    glBindVertexArray( std3D_globalVao );
 
     world_data_all = (D3DVERTEX*)malloc(STD3D_MAX_VERTICES * sizeof(D3DVERTEX));
     world_data_elements = (GLushort*)malloc(sizeof(GLushort) * 3 * STD3D_MAX_TRIS);

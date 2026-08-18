@@ -58,8 +58,9 @@ extern int Window_lastMouseX;
 extern int Window_lastMouseY;
 extern char openjkdf2_aOrigCwd[512];
 
-/* std3D (Platform/GL/std3D.c) */
-extern void std3D_SetWindowFbo(GLint fbo); /* LIBRETRO_BUILD helper added in std3D.c */
+/* std3D (Platform/GL/std3D.c) — LIBRETRO_BUILD helpers added there. */
+extern void std3D_SetWindowFbo(GLint fbo);
+extern void std3D_RebindVAO(void);
 
 #ifndef OPENJKDF2_RELEASE_VERSION_STRING
 #define OPENJKDF2_RELEASE_VERSION_STRING "unknown"
@@ -626,10 +627,13 @@ RETRO_API void retro_run(void)
 
     core_poll_input();
 
-    /* The frontend's framebuffer handle may change every frame. */
+    /* The frontend's framebuffer handle may change every frame, and its
+     * compositor leaves a different VAO bound (core-profile draws would no-op
+     * without the engine's VAO). */
     GLint fbo = (GLint)g_core.hw_render.get_current_framebuffer();
     std3D_SetWindowFbo(fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fbo);
+    std3D_RebindVAO();
 
     Window_Main_Loop(); /* one frame: game/menu logic + render */
 
