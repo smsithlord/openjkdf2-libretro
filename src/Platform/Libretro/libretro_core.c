@@ -243,11 +243,15 @@ static void core_inject_key(bool down, unsigned keycode, uint32_t character)
     int scancode = retro_key_to_sdl_scancode(keycode);
     if (scancode > 0 && scancode < 256)
     {
+        /* stdControl reads gameplay keys by POLLING this array inside
+         * stdControl_ReadControls. Do NOT call SetSDLKeydown for presses here:
+         * that consumes the 0->1 edge between frames, before ReadControls'
+         * per-frame reset, silently killing every edge-triggered action
+         * (weapon select, activate) while held keys (movement) still work.
+         * Mirror the SDL pump: presses via the poll, releases forwarded. */
         g_keyboard_state[scancode] = down;
-        /* Safe pre-startup: stdControl's scancode map is zeroed until its
-         * _Startup, and the window-message handler table below is empty --
-         * and boot-time modal dialogs need input to be dismissable. */
-        stdControl_SetSDLKeydown(scancode, down ? 1 : 0, now);
+        if (!down)
+            stdControl_SetSDLKeydown(scancode, 0, now);
     }
 
     int bSendChar = 0;
