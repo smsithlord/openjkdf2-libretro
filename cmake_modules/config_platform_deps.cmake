@@ -264,8 +264,12 @@ if(TARGET_WIN32)
     file(GLOB TARGET_WIN32_SRCS ${PROJECT_SOURCE_DIR}/src/Platform/Win32/*.c)
     list(APPEND ENGINE_SOURCE_FILES ${TARGET_WIN32_SRCS})
 
-    add_subdirectory(${PROJECT_SOURCE_DIR}/packaging/win32)
-    list(APPEND ENGINE_SOURCE_FILES ${PROJECT_SOURCE_DIR}/packaging/win32/openjkdf2.rc)
+    # The .rc embeds the app icon/version plus an .exe manifest with a hardcoded
+    # openjkdf2-64 name; none of it applies to (or compiles into) a libretro DLL.
+    if(NOT TARGET_LIBRETRO)
+        add_subdirectory(${PROJECT_SOURCE_DIR}/packaging/win32)
+        list(APPEND ENGINE_SOURCE_FILES ${PROJECT_SOURCE_DIR}/packaging/win32/openjkdf2.rc)
+    endif()
 
     # Prefer the POSIX wuRegistry (JSON) over native
     if (TARGET_POSIX OR PLAT_MSVC)
