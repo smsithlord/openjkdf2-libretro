@@ -98,6 +98,19 @@ GLint std3D_windowFbo = 0;
 std3DFramebuffer std3D_framebuffers[2];
 std3DFramebuffer *std3D_pFb = NULL;
 
+#ifdef LIBRETRO_BUILD
+// Libretro HW render: the frontend owns the output framebuffer and its handle
+// can change every frame. Repoint both the startup-captured global and the
+// generated framebuffers' cached window target (std3D_generateFramebuffer
+// copies std3D_windowFbo into pFb->window.fbo).
+void std3D_SetWindowFbo(GLint fbo)
+{
+    std3D_windowFbo = fbo;
+    std3D_framebuffers[0].window.fbo = fbo;
+    std3D_framebuffers[1].window.fbo = fbo;
+}
+#endif
+
 static bool has_initted = false;
 
 static void* last_overlay = NULL;

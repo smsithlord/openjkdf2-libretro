@@ -128,3 +128,5 @@ graphify-out/
 AGENTS.md
 .blocksds
 packaging/dreamcast/disc/*
+build_libretro/
+packaging/win32/openjkdf2_libretro.exe.manifest

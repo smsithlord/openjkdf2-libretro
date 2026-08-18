@@ -1284,6 +1284,11 @@ EM_JS(int, canvas_get_height, (), {
 
 void Window_RecreateSDL2Window()
 {
+#ifdef LIBRETRO_BUILD
+    // The libretro frontend owns the window and GL context; creating one here
+    // would fail (SDL video is never initialized) and hit the exit(-1) below.
+    return;
+#endif
 #ifdef ARCH_WASM
     static int onlyOnce = 0;
     if (onlyOnce) {

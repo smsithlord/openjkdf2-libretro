@@ -271,6 +271,16 @@ static int stdControl_bKeyboardBeingShown = 0;
 int stdControl_bControllerEscapeKey = 0;
 int stdControl_bControllerEscapeKey_last = 0;
 
+#ifdef LIBRETRO_BUILD
+// Libretro: SDL never owns a window so SDL_GetKeyboardState() stays empty; the
+// core maintains its own SDL-scancode-indexed array from frontend key events
+// (src/Platform/Libretro/libretro_core.c).
+extern const bool* libretro_GetKeyboardState(void);
+#define stdControl_GetKeyboardState() libretro_GetKeyboardState()
+#else
+#define stdControl_GetKeyboardState() SDL_GetKeyboardState(NULL)
+#endif
+
 // Added: SDL2
 void stdControl_SetSDLKeydown(int keyNum, int bDown, uint32_t readTime)
 {
@@ -829,7 +839,7 @@ void stdControl_ReadControls()
     static int stdControl_bDisableKeyboard_last = 0;
     if (!stdControl_bDisableKeyboard && stdControl_bDisableKeyboard_last)
     {
-        const bool *state = SDL_GetKeyboardState(NULL);
+        const bool *state = stdControl_GetKeyboardState();
         for (int i = 0; i < 256; i++)
         {
             stdControl_aDebounce[i] = !!state[i];
@@ -841,7 +851,7 @@ void stdControl_ReadControls()
 
     if ( !stdControl_bDisableKeyboard )
     {
-        const bool *state = SDL_GetKeyboardState(NULL);
+        const bool *state = stdControl_GetKeyboardState();
         for (int i = 0; i < 256; i++)
         {
             int s = !!state[i];
