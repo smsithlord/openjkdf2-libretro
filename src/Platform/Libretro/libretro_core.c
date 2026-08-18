@@ -816,6 +816,38 @@ static void core_setenv(const char* name, const char* value)
 #endif
 }
 
+/* Put an error on the frontend's OSD (users don't see the log). */
+static void core_show_message(const char* text)
+{
+    if (!g_core.environ_cb)
+        return;
+
+    struct retro_message_ext ext;
+    memset(&ext, 0, sizeof(ext));
+    ext.msg = text;
+    ext.duration = 6000;
+    ext.priority = 3;
+    ext.level = RETRO_LOG_ERROR;
+    ext.target = RETRO_MESSAGE_TARGET_ALL;
+    ext.type = RETRO_MESSAGE_TYPE_NOTIFICATION;
+    if (!g_core.environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, &ext))
+    {
+        struct retro_message legacy = { text, 360 };
+        g_core.environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &legacy);
+    }
+}
+
+static bool core_path_is_dir(const char* path)
+{
+#ifdef _WIN32
+    DWORD attr = GetFileAttributesA(path);
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#else
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
 /* rom: <basefolder>/episode/<name>.gob -> basefolder */
 static bool core_derive_basefolder(const char* rom_path)
 {
@@ -860,11 +892,32 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
     if (!core_derive_basefolder(game->path))
     {
         core_log(RETRO_LOG_ERROR, "could not derive basefolder from '%s' (expected <basefolder>/episode/<name>.gob)\n", game->path);
+        core_show_message("OpenJKDF2: load an episode GOB from inside your game folder, e.g. MyJK/episode/JK1.GOB");
         return false;
     }
 
     size_t len = strlen(game->path);
     g_core.is_mots = (len > 4) && (_strcmpi(game->path + len - 4, ".goo") == 0);
+
+    /* Fail with a visible explanation instead of booting into missing-data
+     * chaos: the folder above the GOB's directory must be a JK install layout
+     * with resource GOBs (Res2.gob etc.). fcaseopen handles casing later; on
+     * Windows the filesystem is case-insensitive anyway. */
+    {
+        char resdir[sizeof(g_core.basefolder) + 16];
+        snprintf(resdir, sizeof(resdir), "%s/resource", g_core.basefolder); /* Win32 APIs accept '/' */
+        if (!core_path_is_dir(resdir))
+        {
+            core_log(RETRO_LOG_ERROR,
+                     "no resource/ directory in '%s'. Expected layout:\n"
+                     "  <YourJKFolder>/episode/JK1.GOB   <- load this file\n"
+                     "  <YourJKFolder>/resource/Res2.gob (from your Jedi Knight install)\n"
+                     "  <YourJKFolder>/MUSIC/            (optional, music tracks)\n",
+                     g_core.basefolder);
+            core_show_message("OpenJKDF2: game data not found - the folder containing episode/ must also contain resource/ (Res2.gob) from your Jedi Knight install");
+            return false;
+        }
+    }
 
     if (core_chdir(g_core.basefolder) != 0)
     {

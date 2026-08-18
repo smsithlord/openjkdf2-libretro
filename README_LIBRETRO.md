@@ -37,6 +37,11 @@ Copy `Episode/`, `Resource/`, and `MUSIC/` from a legal Jedi Knight install
 (e.g. the Steam version) into a **writable** folder. The engine writes saves,
 settings, and checkpoints into this folder.
 
+There is no separate asset-folder setting: the loaded GOB's location *is* the
+configuration. If the folder above the GOB doesn't contain `resource/`, the
+core refuses to load and shows an on-screen message explaining the expected
+layout (plus a detailed diagram in the frontend log).
+
 ## Running
 
 The standard test environment is a portable RetroArch at `tools/RetroArch-Win64/`
