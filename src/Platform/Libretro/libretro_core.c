@@ -235,10 +235,9 @@ static unsigned retro_key_to_vk(unsigned k, int* bSendChar)
     }
 }
 
-static void core_keyboard_event(bool down, unsigned keycode, uint32_t character, uint16_t key_modifiers)
+/* Shared by the frontend's keyboard callback and the polled fallback below. */
+static void core_inject_key(bool down, unsigned keycode, uint32_t character)
 {
-    (void)key_modifiers;
-
     uint32_t now = (uint32_t)stdPlatform_GetTimeMsec();
 
     int scancode = retro_key_to_sdl_scancode(keycode);
@@ -270,6 +269,125 @@ static void core_keyboard_event(bool down, unsigned keycode, uint32_t character,
     {
         /* Printable text entry (player name, cheats, console). */
         Window_msg_main_handler(g_hWnd, 0x102 /* WM_CHAR */, (WPARAM)character, 0);
+    }
+}
+
+/* True once the frontend has proven it delivers keyboard EVENTS; until then a
+ * per-frame poll of RETRO_DEVICE_KEYBOARD drives the same injection (some
+ * frontend configs deliver key events only in Game Focus mode, but polled key
+ * state works in both). The flag keeps the two paths from double-typing. */
+static bool s_kbd_events_seen;
+/* True once the frontend has delivered a nonzero `character`. RetroArch's
+ * Windows dinput driver never does -- every event arrives with char=0 -- so
+ * text entry would be impossible without synthesizing characters ourselves.
+ * The flag disables synthesis on frontends that do send real characters. */
+static bool s_kbd_chars_seen;
+static int s_kbd_log_budget = 16;
+
+/* US-layout character for a retro_key, for frontends that leave `character`
+ * empty. RETROK_* printable codes are ASCII. */
+static uint32_t core_char_from_retrok(unsigned k, uint16_t mods)
+{
+    bool shift = (mods & RETROKMOD_SHIFT) != 0;
+    bool caps = (mods & RETROKMOD_CAPSLOCK) != 0;
+
+    if (k >= RETROK_a && k <= RETROK_z)
+        return (shift != caps) ? (k - 0x20) : k;
+
+    if (k >= RETROK_KP0 && k <= RETROK_KP9)
+        return '0' + (k - RETROK_KP0);
+
+    switch (k)
+    {
+    case RETROK_KP_PERIOD:   return '.';
+    case RETROK_KP_DIVIDE:   return '/';
+    case RETROK_KP_MULTIPLY: return '*';
+    case RETROK_KP_MINUS:    return '-';
+    case RETROK_KP_PLUS:     return '+';
+    default:                 break;
+    }
+
+    if (k < 0x20 || k >= 0x7F)
+        return 0;
+
+    if (!shift)
+        return k;
+
+    switch (k) /* shifted US layout */
+    {
+    case '1': return '!';
+    case '2': return '@';
+    case '3': return '#';
+    case '4': return '$';
+    case '5': return '%';
+    case '6': return '^';
+    case '7': return '&';
+    case '8': return '*';
+    case '9': return '(';
+    case '0': return ')';
+    case '-': return '_';
+    case '=': return '+';
+    case '[': return '{';
+    case ']': return '}';
+    case '\\': return '|';
+    case ';': return ':';
+    case '\'': return '"';
+    case ',': return '<';
+    case '.': return '>';
+    case '/': return '?';
+    case '`': return '~';
+    default:  return k;
+    }
+}
+
+static void core_keyboard_event(bool down, unsigned keycode, uint32_t character, uint16_t key_modifiers)
+{
+    if (s_kbd_log_budget > 0)
+    {
+        s_kbd_log_budget--;
+        core_log(RETRO_LOG_INFO, "kbd event: down=%d key=%u char=0x%x mods=0x%x\n",
+                 down ? 1 : 0, keycode, character, key_modifiers);
+    }
+
+    if (keycode != RETROK_UNKNOWN)
+        s_kbd_events_seen = true;
+    if (character != 0)
+        s_kbd_chars_seen = true;
+    else if (down && !s_kbd_chars_seen)
+        character = core_char_from_retrok(keycode, key_modifiers);
+
+    core_inject_key(down, keycode, character);
+}
+
+static void core_poll_keyboard_fallback(void)
+{
+    static bool state[RETROK_LAST];
+
+    retro_input_state_t input = g_core.input_state_cb;
+    if (!input || s_kbd_events_seen)
+        return;
+
+    bool shift = input(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_LSHIFT) ||
+                 input(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_RSHIFT);
+
+    for (unsigned k = 1; k < RETROK_LAST; k++)
+    {
+        int bSendChar;
+        if (!retro_key_to_sdl_scancode(k) && !retro_key_to_vk(k, &bSendChar))
+            continue;
+
+        bool down = input(0, RETRO_DEVICE_KEYBOARD, 0, k) != 0;
+        if (down == state[k])
+            continue;
+        state[k] = down;
+
+        /* RETROK_* printable codes are ASCII; uppercase letters under shift is
+         * enough for name entry until real key events arrive. */
+        uint32_t character = 0;
+        if (k >= 0x20 && k < 0x7F)
+            character = (shift && k >= RETROK_a && k <= RETROK_z) ? (k - 0x20) : k;
+
+        core_inject_key(down, k, character);
     }
 }
 
@@ -329,6 +447,8 @@ static void core_poll_input(void)
     if (g_core.input_poll_cb)
         g_core.input_poll_cb();
 
+    core_poll_keyboard_fallback();
+
     int dx = input(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X);
     int dy = input(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y);
     core_update_mouse_position(dx, dy);
@@ -375,6 +495,127 @@ static void core_context_destroy(void)
 {
     g_core.context_alive = false;
     core_log(RETRO_LOG_WARN, "context_destroy (context loss recovery is not implemented yet)\n");
+}
+
+/* ------------------------------------------------------------------------
+ * Core-drawn mouse cursor
+ *
+ * The GUI expects the OS cursor to hover over its menus
+ * (jkGuiRend_SetCursorVisible drives SDL/Win32 cursor visibility), but no OS
+ * cursor ever overlays a libretro frontend's viewport. Draw a small wedge at
+ * the engine's menu-space mouse position after the engine finishes its frame.
+ * ------------------------------------------------------------------------ */
+
+extern int libretro_GetCursorVisible(void); /* jkGUIRend.c (LIBRETRO_BUILD) */
+
+static GLuint s_cursor_prog, s_cursor_vao, s_cursor_vbo;
+static GLint s_cursor_u_xform, s_cursor_u_color;
+static bool s_cursor_init_failed;
+
+static const char* CURSOR_VS =
+    "#version 330 core\n"
+    "layout(location=0) in vec2 pos;\n"
+    "uniform vec4 xform;\n" /* scale.xy, offset.xy (NDC) */
+    "void main() { gl_Position = vec4(pos * xform.xy + xform.zw, 0.0, 1.0); }\n";
+
+static const char* CURSOR_FS =
+    "#version 330 core\n"
+    "uniform vec4 color;\n"
+    "out vec4 frag;\n"
+    "void main() { frag = color; }\n";
+
+/* Arrow wedge in cursor-local pixels, y down. */
+static const float CURSOR_TRI[6] = { 0.0f, 0.0f, 0.0f, 16.0f, 11.0f, 11.0f };
+
+static bool core_cursor_init(void)
+{
+    if (s_cursor_prog)
+        return true;
+    if (s_cursor_init_failed)
+        return false;
+
+    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+    GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(vs, 1, &CURSOR_VS, NULL);
+    glShaderSource(fs, 1, &CURSOR_FS, NULL);
+    glCompileShader(vs);
+    glCompileShader(fs);
+
+    GLint vs_ok = 0, fs_ok = 0;
+    glGetShaderiv(vs, GL_COMPILE_STATUS, &vs_ok);
+    glGetShaderiv(fs, GL_COMPILE_STATUS, &fs_ok);
+    if (!vs_ok || !fs_ok)
+    {
+        core_log(RETRO_LOG_WARN, "cursor shader compile failed; no cursor overlay\n");
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        s_cursor_init_failed = true;
+        return false;
+    }
+
+    s_cursor_prog = glCreateProgram();
+    glAttachShader(s_cursor_prog, vs);
+    glAttachShader(s_cursor_prog, fs);
+    glLinkProgram(s_cursor_prog);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+
+    GLint linked = 0;
+    glGetProgramiv(s_cursor_prog, GL_LINK_STATUS, &linked);
+    if (!linked)
+    {
+        core_log(RETRO_LOG_WARN, "cursor shader link failed; no cursor overlay\n");
+        glDeleteProgram(s_cursor_prog);
+        s_cursor_prog = 0;
+        s_cursor_init_failed = true;
+        return false;
+    }
+
+    s_cursor_u_xform = glGetUniformLocation(s_cursor_prog, "xform");
+    s_cursor_u_color = glGetUniformLocation(s_cursor_prog, "color");
+
+    glGenVertexArrays(1, &s_cursor_vao);
+    glGenBuffers(1, &s_cursor_vbo);
+    glBindVertexArray(s_cursor_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, s_cursor_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(CURSOR_TRI), CURSOR_TRI, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (const void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+    return true;
+}
+
+static void core_draw_cursor(void)
+{
+    if (!core_cursor_init())
+        return;
+
+    /* Menu-space (640x480) mouse position -> window pixels -> NDC. */
+    float px = (float)Window_mouseX * ((float)Window_xSize / 640.0f);
+    float py = (float)Window_mouseY * ((float)Window_ySize / 480.0f);
+    float s = (float)Window_ySize / 480.0f; /* cursor scales with resolution */
+
+    float sx = 2.0f * s / (float)Window_xSize;
+    float sy = -2.0f * s / (float)Window_ySize; /* local y grows down-screen */
+    float ox = 2.0f * px / (float)Window_xSize - 1.0f;
+    float oy = 1.0f - 2.0f * py / (float)Window_ySize;
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, Window_xSize, Window_ySize);
+    glUseProgram(s_cursor_prog);
+    glBindVertexArray(s_cursor_vao);
+
+    /* Black underlay offset a pixel for contrast, then white wedge. */
+    glUniform4f(s_cursor_u_xform, sx, sy, ox + 1.5f * sx, oy + 1.5f * sy);
+    glUniform4f(s_cursor_u_color, 0.0f, 0.0f, 0.0f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glUniform4f(s_cursor_u_xform, sx, sy, ox, oy);
+    glUniform4f(s_cursor_u_color, 1.0f, 1.0f, 1.0f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
 /* ------------------------------------------------------------------------
@@ -732,6 +973,10 @@ RETRO_API void retro_run(void)
 
     /* Run the engine until it yields: one frame, or one modal-menu iteration. */
     SwitchToFiber(s_engine_fiber);
+
+    /* Overlay the cursor wedge whenever the GUI wants a visible cursor. */
+    if (s_gl_ready && g_core.engine_started && !jkGame_isDDraw && libretro_GetCursorVisible())
+        core_draw_cursor();
 
     /* Don't leak engine GL state into the frontend's own rendering. */
     if (s_gl_ready)

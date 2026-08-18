@@ -656,6 +656,15 @@ void jkGuiRend_SetCursorVisible(int32_t visible)
     jkGuiRend_UpdateCursor();
 }
 
+#ifdef LIBRETRO_BUILD
+// Libretro: no OS cursor ever overlays the frontend's viewport, so the core
+// draws its own cursor and needs the GUI's visibility state.
+int libretro_GetCursorVisible(void)
+{
+    return jkGuiRend_CursorVisible;
+}
+#endif
+
 void jkGuiRend_UpdateCursor()
 {
     int32_t ret;
