@@ -20,8 +20,9 @@ The pattern: `#ifdef LIBRETRO_BUILD` removing elements from the menus' element
 arrays (or `bIsVisible = 0`), same as existing `TARGET_*` menu gating.
 
 - [ ] **Display options** (`jkGUIDisplay.c`): hide fullscreen, resolution list
-      (enumerated via SDL video — empty/no-op), HiDPI, vsync. Resolution becomes a
-      core option (M2); keep gamma/brightness-style options that pure-GL paths honor.
+      (enumerated via SDL video — empty/no-op), HiDPI, vsync. See the disposition
+      table below for where each removed option goes; keep gamma/brightness-style
+      options that pure-GL paths honor.
 - [ ] **Mods menu** (`jkGUIMods.c`, entry in `jkGUIMain.c`): relies on `-path` +
       full process restart (`openjkdf2_restartMode`) — hide the entry; `mods/*.gob`
       auto-override is the supported path.
@@ -55,6 +56,25 @@ arrays (or `bIsVisible = 0`), same as existing `TARGET_*` menu gating.
       the previous frame's FBO first when only dirty-rects were drawn.
 - [ ] Cutscene pause (Space) — verify video+audio pause/resume path.
 - [ ] Long-session soak test (memory growth, GL resource leaks across level loads).
+
+### Option-disposition rule
+
+An in-game option becomes a **core option** only if the frontend can't already do
+it and the engine can't decide it from inside the game. Everything removed from
+the in-game menus lands in exactly one bucket:
+
+| In-game option | Disposition |
+|---|---|
+| Resolution list | **Core option** `openjkdf2_resolution` — core owns `Window_xSize/ySize`; include 16:9/16:10 sizes (engine renders widescreen FOV natively) and update the aspect via `SET_GEOMETRY` on change |
+| Fullscreen | Frontend-native (RetroArch video settings) — hide |
+| VSync | Frontend-native — hide |
+| HiDPI / window scaling | Meaningless under a frontend — hide |
+| Mods enable | **Core option** `openjkdf2_use_mods` (pre-boot decision) |
+| Episode autostart | **Core option** `openjkdf2_autostart_episode` |
+| Hi-res assets (`Res1hi.gob`) | **Core option** `openjkdf2_hires_assets` |
+| Gamma/brightness, FOV, filtering, bloom/SSAO, hi-poly | Stay in-game — pure GL paths that work, persisted per player profile |
+| Sound volumes, control binds | Stay in-game — per-profile settings |
+| Mods menu (`-path` restart), DF2↔MoTS switch | Neither — restart-based; hidden with no replacement (`mods/` folder + per-game ROMs cover them) |
 
 ## M2 — audio consolidation (the last big architectural piece)
 
