@@ -131,3 +131,4 @@ packaging/dreamcast/disc/*
 build_libretro/
 packaging/win32/openjkdf2_libretro.exe.manifest
 testdata/
+tools/

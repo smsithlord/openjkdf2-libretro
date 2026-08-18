@@ -75,6 +75,35 @@ registry → synthesized `WM_CREATE`/`WM_ACTIVATE`/`WM_ACTIVATEAPP`/`WM_SHOWWIND
 `retro_run`/`context_reset`. Frontends tolerate a slow first frame; RetroArch shows the
 game as loaded immediately after `retro_load_game` returns.
 
+### The engine fiber (modal-menu inversion)
+
+The devdocs' "nested modal loops" warning turned out to be the defining constraint: the
+**entire menu system is modal** — every menu and dialog blocks in
+`jkGuiRend_DisplayAndReturnClicked` ([src/Gui/jkGUIRend.c:333](src/Gui/jkGUIRend.c#L333)),
+pumping whole engine frames via `Window_MessageLoop()` until an element is clicked (the
+desktop build pumps SDL inside that loop; the WASM build presumably survives via
+asyncify). Called directly from `retro_run`, the first menu would never return.
+
+So the core runs the engine on its own **fiber** (Win32 fibers; same OS thread, so no
+locking and the GL context stays current — swap in libco for Linux at M3):
+
+- `retro_run` = poll/inject input → set FBO + rebind VAO → `SwitchToFiber(engine)` →
+  on yield: reset leaked GL state → `video_cb` → `audio_batch_cb`.
+- The engine fiber boots the engine on first resume, then loops
+  `Window_Main_Loop(); yield;` — one frame per resume.
+- `Window_MessageLoop()` (the single call site all modal loops pump through,
+  [src/Win95/Window.c](src/Win95/Window.c)) yields to the frontend at the end of each
+  iteration under `LIBRETRO_BUILD` — one modal-menu iteration per frontend frame, so
+  menus render, receive input, and animate at the frontend's cadence.
+- `jk_exit` (in-game Quit, called from inside modal loops) parks the engine fiber and
+  raises `RETRO_ENVIRONMENT_SHUTDOWN` instead of `exit()`.
+- Unload: the engine fiber may be parked deep inside a modal loop and cannot be unwound
+  safely — the core writes the player config and drops the fiber; clean in-place
+  restart (and thus `retro_reset`) is deferred to M3.
+- Frontend-side GL calls in `retro_run` are gated on a `s_gl_ready` flag set after
+  `glewInit` (which runs on the engine fiber): GLEW's function pointers are NULL before
+  that, and calling one is a jump to address zero.
+
 The in-game Mods menu and DF2↔MoTS switching set `openjkdf2_restartMode` and exit the
 loop; under libretro v1 these are left non-functional (menu entries hidden if cheap to
 do). `-path` mods are out of scope for v1; `mods/*.gob` overrides are the supported path.

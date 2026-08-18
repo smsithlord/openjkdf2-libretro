@@ -1713,8 +1713,19 @@ int Window_MessageLoop()
 
     jkMain_GuiAdvance();
     Window_msg_main_handler(g_hWnd, WM_PAINT, 0, 0);
-    
+
     //Window_SdlUpdate();
+
+#ifdef LIBRETRO_BUILD
+    // This is the one call site the engine's blocking menu loops
+    // (jkGuiRend_DisplayAndReturnClicked) pump through. Under libretro the
+    // frontend must run between iterations to deliver input and present the
+    // frame, so hand control back: one modal-menu iteration per frontend frame.
+    {
+        extern void libretro_yield_to_frontend(void);
+        libretro_yield_to_frontend();
+    }
+#endif
     return 0;
 }
 

@@ -16,6 +16,13 @@
  *    injected through the same entry points the SDL event pump uses.
  *  - std3D composites its final image into std3D_windowFbo, which the core
  *    points at hw_render.get_current_framebuffer() every frame.
+ *  - The engine runs on its own FIBER. Its menu system is modal (every menu
+ *    blocks in jkGuiRend_DisplayAndReturnClicked pumping Window_MessageLoop
+ *    until a click), which would never return from retro_run. Instead,
+ *    retro_run resumes the engine fiber, and the engine yields back once per
+ *    frame -- either at the Window_Main_Loop frame boundary or from inside
+ *    Window_MessageLoop for modal loops (LIBRETRO_BUILD patch). All fibers
+ *    share one OS thread: no locking, and the GL context stays current.
  */
 
 #include <stdint.h>
@@ -238,12 +245,11 @@ static void core_keyboard_event(bool down, unsigned keycode, uint32_t character,
     if (scancode > 0 && scancode < 256)
     {
         g_keyboard_state[scancode] = down;
-        if (g_core.engine_started)
-            stdControl_SetSDLKeydown(scancode, down ? 1 : 0, now);
+        /* Safe pre-startup: stdControl's scancode map is zeroed until its
+         * _Startup, and the window-message handler table below is empty --
+         * and boot-time modal dialogs need input to be dismissable. */
+        stdControl_SetSDLKeydown(scancode, down ? 1 : 0, now);
     }
-
-    if (!g_core.engine_started)
-        return;
 
     int bSendChar = 0;
     unsigned vk = retro_key_to_vk(keycode, &bSendChar);
@@ -371,6 +377,38 @@ static void core_context_destroy(void)
     core_log(RETRO_LOG_WARN, "context_destroy (context loss recovery is not implemented yet)\n");
 }
 
+/* ------------------------------------------------------------------------
+ * Engine fiber
+ *
+ * Win32 fibers for now (this platform module is MSVC-only); swap in libco or
+ * ucontext for the Linux build later.
+ * ------------------------------------------------------------------------ */
+
+static void* s_frontend_fiber;
+static void* s_engine_fiber;
+static bool s_engine_exit_requested;
+static bool s_gl_ready; /* glewInit has run (on the engine fiber); GLEW function
+                         * pointers are NULL before that -- calling any gl* from
+                         * retro_run earlier is a jump to address 0. */
+
+/* Called from engine code (Window_MessageLoop's LIBRETRO_BUILD patch) and from
+ * the engine fiber's own frame loop: hand control back to retro_run. */
+void libretro_yield_to_frontend(void)
+{
+    if (s_frontend_fiber)
+        SwitchToFiber(s_frontend_fiber);
+}
+
+/* Called from jk_exit (LIBRETRO_BUILD patch): the engine wants the process to
+ * exit. Park its fiber forever and let retro_run signal the frontend. */
+void libretro_engine_exit(int code)
+{
+    core_log(RETRO_LOG_INFO, "engine requested exit (%d); signaling frontend shutdown\n", code);
+    s_engine_exit_requested = true;
+    for (;;)
+        libretro_yield_to_frontend();
+}
+
 /* De-SDL'd replica of Window_Main_Linux()'s init order (Window.c), run inside
  * retro_run() so the frontend's GL context is current for Main_Startup's GL
  * bring-up. */
@@ -390,6 +428,7 @@ static bool core_boot_engine(void)
         core_log(RETRO_LOG_ERROR, "glewInit failed: %d\n", (int)glew_err);
         return false;
     }
+    s_gl_ready = true;
 
     Window_xSize = CORE_BASE_WIDTH;
     Window_ySize = CORE_BASE_HEIGHT;
@@ -427,6 +466,46 @@ static bool core_boot_engine(void)
 
     core_log(RETRO_LOG_INFO, "engine boot complete\n");
     return true;
+}
+
+/* The engine's entire life happens on this fiber: boot, then one
+ * Window_Main_Loop per resume. Modal menu loops inside jkMain_GuiAdvance yield
+ * from Window_MessageLoop instead of reaching the frame-boundary yield here. */
+static void CALLBACK core_engine_fiber_proc(void* param)
+{
+    (void)param;
+
+    if (!core_boot_engine())
+    {
+        g_core.engine_start_failed = true;
+        s_engine_exit_requested = true;
+        for (;;)
+            libretro_yield_to_frontend();
+    }
+    g_core.engine_started = true;
+
+    for (;;)
+    {
+        Window_Main_Loop(); /* one frame: game/menu logic + render */
+        if (g_should_exit)
+            s_engine_exit_requested = true;
+        libretro_yield_to_frontend();
+    }
+}
+
+/* The engine fiber is parked somewhere inside its loop -- possibly deep in a
+ * modal menu -- and cannot be unwound safely; save settings, then drop the
+ * fiber and its stack. In-place engine restart is a later milestone. */
+static void core_drop_engine_fiber(void)
+{
+    if (g_core.engine_started && jkPlayer_bHasLoadedSettingsOnce)
+        jkPlayer_WriteConf(jkPlayer_playerShortName);
+    if (s_engine_fiber)
+    {
+        DeleteFiber(s_engine_fiber);
+        s_engine_fiber = NULL;
+    }
+    g_core.engine_started = false;
 }
 
 /* ------------------------------------------------------------------------
@@ -598,13 +677,7 @@ RETRO_API bool retro_load_game_special(unsigned game_type, const struct retro_ga
 
 RETRO_API void retro_unload_game(void)
 {
-    if (g_core.engine_started)
-    {
-        if (jkPlayer_bHasLoadedSettingsOnce)
-            jkPlayer_WriteConf(jkPlayer_playerShortName);
-        Main_Shutdown();
-        g_core.engine_started = false;
-    }
+    core_drop_engine_fiber();
     g_core.game_loaded = false;
 }
 
@@ -613,35 +686,61 @@ RETRO_API void retro_run(void)
     if (!g_core.game_loaded || g_core.engine_start_failed)
         return;
 
-    if (!g_core.engine_started)
+    if (!s_frontend_fiber)
     {
-        if (!core_boot_engine())
+        s_frontend_fiber = ConvertThreadToFiber(NULL);
+        if (!s_frontend_fiber && GetLastError() == ERROR_ALREADY_FIBER)
+            s_frontend_fiber = GetCurrentFiber();
+        if (!s_frontend_fiber)
         {
+            core_log(RETRO_LOG_ERROR, "ConvertThreadToFiber failed (%lu)\n", GetLastError());
             g_core.engine_start_failed = true;
-            if (g_core.environ_cb)
-                g_core.environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
             return;
         }
-        g_core.engine_started = true;
+    }
+    if (!s_engine_fiber)
+    {
+        /* Explicit reserve: CreateFiber's single size is only the commit and
+         * inherits the host exe's (small) default reserve. */
+        s_engine_fiber = CreateFiberEx(1 * 1024 * 1024, 8 * 1024 * 1024, 0,
+                                       core_engine_fiber_proc, NULL);
+        if (!s_engine_fiber)
+        {
+            core_log(RETRO_LOG_ERROR, "CreateFiberEx failed (%lu)\n", GetLastError());
+            g_core.engine_start_failed = true;
+            return;
+        }
+        core_log(RETRO_LOG_INFO, "engine fiber created\n");
     }
 
+    /* Injecting input before engine startup is safe: the window-message
+     * handler table is empty and stdControl's scancode map is zeroed until
+     * their _Startups run. */
     core_poll_input();
 
     /* The frontend's framebuffer handle may change every frame, and its
      * compositor leaves a different VAO bound (core-profile draws would no-op
-     * without the engine's VAO). */
-    GLint fbo = (GLint)g_core.hw_render.get_current_framebuffer();
-    std3D_SetWindowFbo(fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fbo);
-    std3D_RebindVAO();
+     * without the engine's VAO). Before glewInit (first boot resume), the boot
+     * path does its own bind and every gl* pointer here is still NULL. */
+    if (s_gl_ready)
+    {
+        GLint fbo = (GLint)g_core.hw_render.get_current_framebuffer();
+        std3D_SetWindowFbo(fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fbo);
+        std3D_RebindVAO();
+    }
 
-    Window_Main_Loop(); /* one frame: game/menu logic + render */
+    /* Run the engine until it yields: one frame, or one modal-menu iteration. */
+    SwitchToFiber(s_engine_fiber);
 
     /* Don't leak engine GL state into the frontend's own rendering. */
-    glBindVertexArray(0);
-    glUseProgram(0);
-    glActiveTexture(GL_TEXTURE0);
-    glDisable(GL_SCISSOR_TEST);
+    if (s_gl_ready)
+    {
+        glBindVertexArray(0);
+        glUseProgram(0);
+        glActiveTexture(GL_TEXTURE0);
+        glDisable(GL_SCISSOR_TEST);
+    }
 
     if (g_core.video_cb)
         g_core.video_cb(RETRO_HW_FRAME_BUFFER_VALID, Window_xSize, Window_ySize, 0);
@@ -651,21 +750,15 @@ RETRO_API void retro_run(void)
     if (g_core.audio_batch_cb)
         g_core.audio_batch_cb(g_core.silence, CORE_AUDIO_FRAMES);
 
-    if (g_should_exit && g_core.environ_cb)
+    if (s_engine_exit_requested && g_core.environ_cb)
         g_core.environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
 }
 
 RETRO_API void retro_reset(void)
 {
-    /* v1: restart the engine in place (mirrors main.c's restart loop, which
-     * re-runs the full init after OpenJKDF2_Globals_Reset). */
-    if (g_core.engine_started)
-    {
-        if (jkPlayer_bHasLoadedSettingsOnce)
-            jkPlayer_WriteConf(jkPlayer_playerShortName);
-        Main_Shutdown();
-        g_core.engine_started = false;
-    }
+    /* In-place restart needs a clean engine teardown from a parked fiber;
+     * deferred (DESIGN.md M3). */
+    core_log(RETRO_LOG_WARN, "retro_reset is not supported yet; reload the content instead\n");
 }
 
 /* No save states: the engine has no snapshot mechanism. Native saves live in

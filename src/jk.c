@@ -676,6 +676,14 @@ int _fputs(const char * a, FILE * b)
 
 void jk_exit(int a)
 {
+#ifdef LIBRETRO_BUILD
+    // exit() here would take the whole frontend process down. Park the engine
+    // and let the core signal RETRO_ENVIRONMENT_SHUTDOWN instead (never returns).
+    {
+        extern void libretro_engine_exit(int code);
+        libretro_engine_exit(a);
+    }
+#endif
     exit(a);
 }
 
