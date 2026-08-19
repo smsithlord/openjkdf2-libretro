@@ -146,7 +146,15 @@ core submits silence to keep frontend pacing.
   Wrapping native saves would break rewind/run-ahead/netplay expectations;
   `retro_serialize_size() == 0` is the honest contract. If ever revisited:
   RETRO_SERIALIZATION_QUIRK_* flags are the only defensible shape. Not 1.0.
-- RetroAchievements: needs a stable memory map; investigate post-1.0.
+- RetroAchievements: viable via the PrBoom/TyrQuake pattern — a curated,
+  **append-only** synthetic memory block (player health/shields/force, weapon,
+  current episode+level, kill/secret counters, difficulty, cheats-active,
+  mods-active) repopulated from engine globals each frame and exposed as
+  `RETRO_MEMORY_SYSTEM_RAM` for rcheevos triggers. Layout offsets are a
+  forever-contract once sets are published. Hardcore-mode notes: no save
+  states (already true), cheat and `mods/` flags must be in the block so set
+  authors can guard them (mod GOBs alter gameplay without changing the episode
+  GOB that RA hashes for identity). Post-1.0.
 - MoTS/DF2 dual-install QoL, playlist/thumbnail assets for RetroArch.
 
 ## Known issues (tracked)
