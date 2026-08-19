@@ -515,7 +515,7 @@ jkSmack_currentGuiState 0x00552B88 int
 jkSmack_nextGuiState 0x00552B8C int
 jkSmack_alloc 0x00552B74 void*
 
-jkEpisode_aEpisodes 0x8568E0 jkEpisode[64]
+jkEpisode_aEpisodes 0x8568E0 jkEpisode[512]
 jkEpisode_var4 0x005540D8 char[128]
 jkEpisode_var5 0x00554158 char[128]
 jkEpisode_var2 0x005541D8 uint32_t

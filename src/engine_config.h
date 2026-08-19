@@ -237,6 +237,10 @@
 #define STDGOB_MAX_GOBS (64)
 #endif
 
+// Max episode GOBs the enumerator will list (stock engine: 64, hard-coded).
+// Must match jkEpisode_aEpisodes[...] in symbols.syms. ~164 bytes/entry.
+#define JKEPISODE_MAX_EPISODES (512)
+
 #define RDPUPPET_MAX_TRACKS (4)
 #define RDPUPPET_MAX_NODES (64)
 
