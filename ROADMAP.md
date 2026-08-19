@@ -84,12 +84,19 @@ core submits silence to keep frontend pacing.
 
 - [ ] OpenAL Soft **loopback device** (`ALC_SOFT_loopback` /
       `alcRenderSamplesSOFT`): swap device creation in `stdSound` under
-      `LIBRETRO_BUILD`; render 800 frames (48000/60) per `retro_run`.
-- [ ] Music: replace `stdMci`'s `Mix_OpenAudio` path with decode-into-the-mix
-      (SDL_mixer decode-only if workable, else stb_vorbis on `MUSIC/Track*.ogg`).
-- [ ] SMUSH cutscene audio: redirect its device output into the same mix.
-- [ ] Sum → clamp → single `audio_batch_cb`; engine no longer opens any real
-      audio device; verify fast-forward pitches correctly and pause silences.
+      `LIBRETRO_BUILD`; render exactly 800 frames (48000/60, integer — no drift)
+      per `retro_run`, submitted as the single `audio_batch_cb`. Loopback
+      devices spawn no mixer thread: audio stays synchronous/deterministic.
+- [ ] Music: `stdMci` is the ONLY non-OpenAL audio path. Route it through an
+      OpenAL **streaming source** under `LIBRETRO_BUILD` (SDL_mixer decode-only
+      or stb_vorbis on `MUSIC/Track*.ogg` → queued AL buffers) so the loopback
+      render captures everything — one mixer, no manual sample summing.
+- [x] ~~SMUSH cutscene audio: redirect its device output~~ — verified stale
+      (devdocs): cutscene audio already plays through `stdSound` OpenAL buffers
+      ([src/Main/jkCutscene.c:400](src/Main/jkCutscene.c#L400)); loopback
+      captures it for free. Just verify pause/volume behavior at M2.
+- [ ] Engine no longer opens any real audio device; verify fast-forward
+      pitches correctly, pause silences, and RetroArch recording captures audio.
 
 ## M3 — options, platforms, lifecycle polish
 
