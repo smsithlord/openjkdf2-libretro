@@ -67,6 +67,12 @@ Shipped in `25860a97` + `543fe5a2`, all verified in RetroArch:
       guard falls back to direct boot.
 - [x] Session resume is map+pose only by design — world state (kills, pickups)
       stays the job of native saves; the two compose (resume in, then Load Game).
+- [x] devdocs/07 cherry-picks (`b44e6c98`): cog no-change-rebuild fix (~90 s →
+      1.8 s), SDL_mixer Debug/Release CRT-clobber fix (paths adapted to 3.2.4),
+      Release PDBs + `/GL`+`/LTCG`, `std3D_DoTex` GL-state dedup, and
+      `stdPlatform_Printf` → `retro_log` mirror with duplicate suppression +
+      `OPENJKDF2_LOG` file mirror. `/arch:AVX2` deferred until near release
+      (old-hardware audience — devdocs/07 §6).
 
 ## M1 — playable v1 (finish line for "it's a real core")
 
