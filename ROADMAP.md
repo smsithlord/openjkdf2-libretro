@@ -50,6 +50,24 @@ plan — see DESIGN.md "Engine quiesce"):
       no crash on frontend exit. (Baseline contrast: the OLD build crashed in
       ucrtbase on frontend exit with content loaded.)
 
+## Adopted from AAOpenJKDF2 (devdocs/06) — DONE
+
+Shipped in `25860a97` + `543fe5a2`, all verified in RetroArch:
+
+- [x] Episode GOB list cap raised 64 → 512 (`JKEPISODE_MAX_EPISODES`),
+      with a log line when the cap is hit instead of the stock silent drop.
+- [x] `jkSession` (port of the fork's aaSession, save warts fixed): last-session
+      record in `<basefolder>/openjkdf2_lastsession.json`, captured at gameplay
+      exit / level switches / the core's engine quiesce.
+- [x] Core options: `openjkdf2_boot` (menu / straight-into-episode / resume-last-
+      session), `openjkdf2_boot_game_type` (SP / MP local host), `openjkdf2_resume_position`,
+      `openjkdf2_skip_intro`. Direct boot resolves the episode's first level
+      entry itself; resume restores exact position+look via the engine's
+      canonical teleport with never-into-the-void validation, and a ROM-mismatch
+      guard falls back to direct boot.
+- [x] Session resume is map+pose only by design — world state (kills, pickups)
+      stays the job of native saves; the two compose (resume in, then Load Game).
+
 ## M1 — playable v1 (finish line for "it's a real core")
 
 ### Hide/neutralize features that can't work under a frontend

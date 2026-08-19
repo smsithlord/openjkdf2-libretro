@@ -246,6 +246,10 @@ Registered via `RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2` at `retro_set_environment
 | `openjkdf2_autostart_episode` | disabled/enabled | disabled | derive episode from ROM filename → `-episode <name> -autostart` on the synthesized cmdline (M3) |
 | `openjkdf2_hires_assets` | enabled/disabled | enabled | investigate at M3: `Res1hi.gob` loads by wildcard; "disabled" would skip it in the resource scan |
 | `openjkdf2_cursor_autohide` | enabled/disabled | enabled | **implemented** — core-drawn menu pointer appears only after pointer activity and hides after ~3 s idle; read per-frame via `GET_VARIABLE_UPDATE` |
+| `openjkdf2_boot` | menu/episode/resume | menu | **implemented** — `jkSession_ConfigureBoot`/`ArmBoot` (src/Main/jkSession.c, ported from AAOpenJKDF2 per devdocs/06): `episode` autostarts the ROM's episode at its first level entry; `resume` re-enters the last session's map and pose from `<basefolder>/openjkdf2_lastsession.json`, falling back to `episode` then `menu` |
+| `openjkdf2_boot_game_type` | singleplayer/multiplayer | singleplayer | **implemented** — direct boot's mode; `multiplayer` solo-hosts a local session (works against `Networking/None`; needed for MP episode GOBs like JK1MP) |
+| `openjkdf2_resume_position` | enabled/disabled | enabled | **implemented** — disabled resumes the map at its default spawn (session records are still written either way) |
+| `openjkdf2_skip_intro` | disabled/enabled | disabled | **implemented** — menu boot skips the pre-title intro movie (engine's own disable-cutscenes skip in `jkSmack_SmackPlay`, without touching the profile setting) |
 
 ## Filesystem & saves
 
