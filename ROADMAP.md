@@ -13,6 +13,43 @@ Loose working plan from today's state to a releasable core. Companion to
 - [x] Friendly on-screen error for wrong/missing game data layouts
 - [x] In-game Quit → clean frontend shutdown
 
+## Next sprint — lifecycle: clean unload + frontend Restart
+
+Today `retro_unload_game` writes the player config and abandons the parked
+engine fiber. That relies on the frontend dlclose-ing the core so the next
+LoadLibrary gets fresh globals — which only works **if the unmap completes**:
+any thread still executing in (or pinning) the module blocks it, and the next
+load reuses dirty state. It also leaves `retro_reset` (the frontends' Restart
+button) unimplemented. Plan:
+
+- [ ] **Thread inventory at unload** (empirical, not assumed): enumerate live
+      threads after `retro_unload_game` in this exact build config. Expected
+      owner: OpenAL's device mixer/events threads (updater and network enum are
+      compiled out here — `TARGET_USE_CURL FALSE`, `PLATFORM_NOSOCKETS`;
+      verify nothing else, e.g. SDL timers, appears).
+- [ ] **Cooperative engine quiesce**: a shutdown-request flag the engine fiber
+      checks at its frame-boundary yield. Modal menus unwind cooperatively —
+      `jkGuiRend` already supports force-popping the active menu
+      (`menu->lastClicked = -1`); pop one level per resumed frame under a
+      bounded budget (~120 frames). Once unwound: `jkPlayer_WriteConf` →
+      engine GPU teardown → `Main_Shutdown` (closes the OpenAL device, joining
+      its threads) → fiber returns; then `DeleteFiber`.
+- [ ] **Fallback** when quiesce can't complete in budget: current behavior
+      (WriteConf + drop fiber) plus explicitly closing the OpenAL device from
+      the frontend fiber so no audio thread outlives the content; log loudly.
+- [ ] **GL ordering**: GPU teardown needs a live context; frontends differ on
+      `context_destroy` vs `retro_unload_game` order — free GL resources in
+      whichever arrives first and guard the other.
+- [ ] **retro_deinit hygiene**: `ConvertFiberToThread` so the frontend's main
+      thread doesn't remain a fiber after the core unloads.
+- [ ] **retro_reset**: same quiesce, then re-arm boot (recreate the fiber;
+      boot already runs `OpenJKDF2_Globals_Reset`). This also makes in-process
+      content reload safe on frontends that don't dlclose between loads.
+- [ ] **Acceptance**: in one RetroArch session — load → play → Close Content →
+      load again → play, twice; Restart Content from the main menu, in-game,
+      and mid-cutscene; audio stops on close; saves persist across the cycle;
+      no crash on frontend exit.
+
 ## M1 — playable v1 (finish line for "it's a real core")
 
 ### Hide/neutralize features that can't work under a frontend
@@ -113,10 +150,7 @@ core submits silence to keep frontend pacing.
       `openjkdf2_autostart_episode` (derive `-episode <rom name> -autostart`),
       `openjkdf2_hires_assets` (skip `Res1hi.gob`).
 - [ ] **MoTS**: verify `.goo` boot end-to-end (`Main_bMotsCompat`, `JKM.goo`).
-- [ ] **retro_reset** + clean unload: cooperative engine shutdown from a parked
-      fiber (request-flag at the frame-boundary yield; modal-parked = decline),
-      then `Main_Shutdown` + `OpenJKDF2_Globals_Reset` re-init. Also makes
-      in-process content reload safe for non-RetroArch frontends.
+- [x] ~~retro_reset + clean unload~~ — promoted to the lifecycle sprint above.
 - [ ] Frame-time callback (`SET_FRAME_TIME_CALLBACK`) → `sithTime`, so
       fast-forward/slow-motion scale game time instead of wall clock.
 - [ ] **Linux build**: extend `plat_libretro.cmake` from the `plat_linux_64`
@@ -175,7 +209,7 @@ core submits silence to keep frontend pacing.
 | Ghost-frame artifact, top-left corner, during opening crawl | M1 |
 | Music silent; SFX bypasses frontend audio (no FF pitch, plays while paused) | M2 |
 | Middle/extra mouse buttons dead | M1 |
-| `retro_reset` is a no-op; unload leaks the parked fiber's engine state | M3 |
+| `retro_reset` is a no-op; unload leaks the parked fiber's engine state and may leave OpenAL threads pinning the DLL | lifecycle sprint |
 | Display options menu shows non-functional entries | M1 |
 | Mods menu entry present but restart-based (non-functional) | M1 |
 | RetroArch "Game Focus" can be toggled off by Scroll Lock, muting hotkey-bound keys | docs |
