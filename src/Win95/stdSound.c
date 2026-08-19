@@ -146,11 +146,39 @@ void stdSound_Shutdown()
 {
     if (Main_bHeadless) return;
 
+#ifdef LIBRETRO_BUILD
+    // Libretro: must be idempotent -- the core force-closes the device at
+    // unload when the engine couldn't shut down cooperatively, which may run
+    // after (or instead of) a normal engine shutdown. OpenAL's device threads
+    // must never outlive the content: they would pin the core DLL in the
+    // frontend process and the next load would inherit dirty globals.
+    if (!context && !device) return;
+    if (context) {
+        device = alcGetContextsDevice(context);
+        alcMakeContextCurrent(NULL);
+        alcDestroyContext(context);
+        context = NULL;
+    }
+    if (device) {
+        alcCloseDevice(device);
+        device = NULL;
+    }
+#else
 	device = alcGetContextsDevice(context);
 	alcMakeContextCurrent(NULL);
 	alcDestroyContext(context);
 	alcCloseDevice(device);
+#endif
 }
+
+#ifdef LIBRETRO_BUILD
+// Libretro: last-resort close from the core's unload fallback (engine boot
+// failed or quiesce impossible); safe to call at any point, including twice.
+void libretro_ForceCloseAudioDevice(void)
+{
+    stdSound_Shutdown();
+}
+#endif
 
 void stdSound_SetMenuVolume(flex_t a1)
 {

@@ -754,10 +754,29 @@ void std3D_FreeResources()
 
     glDeleteBuffers(1, &menu_vbo_all);
 
+#ifdef LIBRETRO_BUILD
+    // Libretro: init_resources regenerates the VAO, so delete it here or
+    // repeated teardown/reinit cycles (retro_reset) leak one per cycle -- and
+    // std3D_RebindVAO must not rebind a stale handle after teardown (it
+    // guards on nonzero).
+    glDeleteVertexArrays(1, &std3D_globalVao);
+    std3D_globalVao = 0;
+#endif
+
     std3D_bReinitHudElements = 1;
 
     has_initted = false;
 }
+
+#ifdef LIBRETRO_BUILD
+// Libretro: lets the core guard its std3D_FreeResources calls. Frontends
+// differ on context_destroy vs retro_unload_game order, so GL teardown runs
+// in whichever arrives first and must be a no-op in the other.
+int libretro_std3D_HasGlResources(void)
+{
+    return has_initted;
+}
+#endif
 
 int std3D_StartScene()
 {

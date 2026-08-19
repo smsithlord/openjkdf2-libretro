@@ -345,7 +345,17 @@ int32_t jkGuiRend_DisplayAndReturnClicked(jkGuiMenu *menu)
         {
             jkGuiRend_thing_four = 0;
             if ( g_should_exit )
+            {
+#ifdef LIBRETRO_BUILD
+                // Libretro: during a cooperative quiesce the core sets
+                // g_should_exit to make menu loops unwind (the engine's own
+                // clean-exit convention); jk_exit here would park the engine
+                // fiber mid-unwind instead of letting the stack pop.
+                extern int libretro_InQuiesce(void);
+                if (!libretro_InQuiesce())
+#endif
                 jk_exit(msgret);
+            }
             if ( menu->idkFunc && !menu->lastClicked )
                 menu->idkFunc(menu);
         }
@@ -662,6 +672,15 @@ void jkGuiRend_SetCursorVisible(int32_t visible)
 int libretro_GetCursorVisible(void)
 {
     return jkGuiRend_CursorVisible;
+}
+
+// Libretro: cooperative quiesce -- pop the innermost modal menu loop by
+// simulating its cancel result (-1), one level per resumed frame. The next
+// display of the same menu resets lastClicked, so a stale pop is harmless.
+void libretro_ForcePopActiveMenu(void)
+{
+    if (jkGuiRend_activeMenu)
+        jkGuiRend_activeMenu->lastClicked = -1;
 }
 #endif
 

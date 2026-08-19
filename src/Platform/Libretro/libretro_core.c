@@ -68,6 +68,12 @@ extern char openjkdf2_aOrigCwd[512];
 /* std3D (Platform/GL/std3D.c) — LIBRETRO_BUILD helpers added there. */
 extern void std3D_SetWindowFbo(GLint fbo);
 extern void std3D_RebindVAO(void);
+extern void std3D_FreeResources(void);
+extern int libretro_std3D_HasGlResources(void);
+
+/* jkGUIRend.c / stdSound.c — LIBRETRO_BUILD helpers added there. */
+extern void libretro_ForcePopActiveMenu(void);
+extern void libretro_ForceCloseAudioDevice(void);
 
 #ifndef OPENJKDF2_RELEASE_VERSION_STRING
 #define OPENJKDF2_RELEASE_VERSION_STRING "unknown"
@@ -118,6 +124,15 @@ typedef struct core_state_t
 } core_state_t;
 
 static core_state_t g_core;
+
+/* Fiber machinery state (see the "Engine fiber" section below). */
+static void* s_frontend_fiber;
+static void* s_engine_fiber;
+static bool s_engine_exit_requested;
+static bool s_gl_ready; /* glewInit has run (on the engine fiber) AND the HW
+                         * context is usable; GLEW function pointers are NULL
+                         * before glewInit -- calling any gl* from retro_run
+                         * earlier is a jump to address 0. */
 
 /* SDL-scancode-indexed key state consumed by Platform/SDL2/stdControl.c through
  * libretro_GetKeyboardState() (the SDL_GetKeyboardState array never populates
@@ -495,16 +510,40 @@ static void core_poll_input(void)
  * Engine lifecycle
  * ------------------------------------------------------------------------ */
 
+/* Forward decls (defined in the cursor / fiber sections below). */
+static void core_free_cursor_gl(bool delete_objects);
+
 static void core_context_reset(void)
 {
     g_core.context_alive = true;
-    core_log(RETRO_LOG_INFO, "context_reset\n");
+    /* If the engine survived a context loss, its GLEW pointers are still
+     * loaded (WGL function pointers are process-wide); std3D rebuilds its GL
+     * state lazily via StartScene's init path on the next frame. */
+    if (g_core.engine_started)
+        s_gl_ready = true;
+    core_log(RETRO_LOG_INFO, "context_reset (engine_started=%d)\n", g_core.engine_started ? 1 : 0);
 }
 
 static void core_context_destroy(void)
 {
+    /* Empirical (RetroArch 1.21, close content): this arrives BEFORE
+     * retro_unload_game, and the context is only current during the callback
+     * -- so engine GL teardown must happen here, and the unload quiesce that
+     * follows must not render a frame. */
+    core_log(RETRO_LOG_INFO, "context_destroy (gl_ready=%d, engine_started=%d, glctx=%p)\n",
+             s_gl_ready ? 1 : 0, g_core.engine_started ? 1 : 0, (void*)wglGetCurrentContext());
+    if (s_gl_ready)
+    {
+        if (libretro_std3D_HasGlResources())
+            std3D_FreeResources();
+        core_free_cursor_gl(true);
+    }
+    else
+    {
+        core_free_cursor_gl(false);
+    }
+    s_gl_ready = false;
     g_core.context_alive = false;
-    core_log(RETRO_LOG_WARN, "context_destroy (context loss recovery is not implemented yet)\n");
 }
 
 /* ------------------------------------------------------------------------
@@ -628,6 +667,22 @@ static void core_draw_cursor(void)
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
+/* delete_objects: the GL context is still current, actually free them; false
+ * when the context is already gone and only the stale handles are dropped. */
+static void core_free_cursor_gl(bool delete_objects)
+{
+    if (delete_objects && s_cursor_prog)
+    {
+        glDeleteProgram(s_cursor_prog);
+        glDeleteVertexArrays(1, &s_cursor_vao);
+        glDeleteBuffers(1, &s_cursor_vbo);
+    }
+    s_cursor_prog = 0;
+    s_cursor_vao = 0;
+    s_cursor_vbo = 0;
+    s_cursor_init_failed = false;
+}
+
 /* ------------------------------------------------------------------------
  * Engine fiber
  *
@@ -635,23 +690,73 @@ static void core_draw_cursor(void)
  * ucontext for the Linux build later.
  * ------------------------------------------------------------------------ */
 
-static void* s_frontend_fiber;
-static void* s_engine_fiber;
-static bool s_engine_exit_requested;
-static bool s_gl_ready; /* glewInit has run (on the engine fiber); GLEW function
-                         * pointers are NULL before that -- calling any gl* from
-                         * retro_run earlier is a jump to address 0. */
+/* ---- Engine quiesce ----------------------------------------------------
+ *
+ * Getting the engine OUT of a session cleanly has two shapes (empirical: on
+ * close-content RetroArch calls context_destroy BEFORE retro_unload_game, so
+ * no frame may render during an unload quiesce):
+ *
+ *  - UNWIND (retro_reset; GL context alive): set g_should_exit -- the
+ *    engine's own clean-exit convention, which menu loops like jkGuiMain_Show
+ *    already honor -- and force-pop one modal menu per resumed frame until
+ *    the fiber unwinds to its frame-boundary loop, which then runs the same
+ *    WriteConf -> Main_Shutdown sequence Window_Main_Linux runs after its
+ *    main loop breaks.
+ *
+ *  - INLINE (retro_unload_game; context gone): resume the fiber once and run
+ *    the shutdown sequence right at its park point, leaving the frames below
+ *    frozen forever. Precedent: the engine's WM_DESTROY handler calls
+ *    Main_Shutdown from inside the modal pump the same way (Window.c).
+ *
+ * Either way Main_Shutdown closes the OpenAL device and joins its threads --
+ * the threads that otherwise pin the core DLL against unmapping. */
+enum { QUIESCE_NONE, QUIESCE_UNWIND, QUIESCE_INLINE };
+static int s_quiesce_mode;
+static bool s_engine_shutdown_done;
+
+#define QUIESCE_UNWIND_BUDGET_FRAMES 120
+
+/* Consumed by jkGUIRend.c's modal pump: suppresses jk_exit while the menu
+ * stack is being unwound with g_should_exit set. */
+int libretro_InQuiesce(void)
+{
+    return s_quiesce_mode != QUIESCE_NONE;
+}
+
+/* Runs ON the engine fiber; never returns. Mirrors the standalone's exit path
+ * (Window.c: main loop breaks on g_should_exit -> WriteConf -> Main_Shutdown). */
+static void core_engine_shutdown_and_park(const char* how)
+{
+    core_log(RETRO_LOG_INFO, "engine shutdown (%s) starting\n", how);
+    g_should_exit = 1;
+    if (jkPlayer_bHasLoadedSettingsOnce)
+        jkPlayer_WriteConf(jkPlayer_playerShortName);
+    Main_Shutdown();
+    s_engine_shutdown_done = true;
+    core_log(RETRO_LOG_INFO, "engine shutdown (%s) complete; fiber parked\n", how);
+    for (;;)
+        SwitchToFiber(s_frontend_fiber); /* raw: must not re-trigger quiesce hooks */
+}
 
 /* Called from engine code (Window_MessageLoop's LIBRETRO_BUILD patch) and from
- * the engine fiber's own frame loop: hand control back to retro_run. */
+ * the engine fiber's own frame loop: hand control back to retro_run. On
+ * resume, a pending quiesce is driven from here -- this is the "checked at
+ * the yield" part of the design. */
 void libretro_yield_to_frontend(void)
 {
     if (s_frontend_fiber)
         SwitchToFiber(s_frontend_fiber);
+    /* Resumed by retro_run or by a quiesce driver. */
+    if (s_quiesce_mode == QUIESCE_INLINE && g_core.engine_started && !s_engine_shutdown_done)
+        core_engine_shutdown_and_park("inline at park point");
+    if (s_quiesce_mode == QUIESCE_UNWIND)
+        libretro_ForcePopActiveMenu(); /* one modal level per resumed frame */
 }
 
 /* Called from jk_exit (LIBRETRO_BUILD patch): the engine wants the process to
- * exit. Park its fiber forever and let retro_run signal the frontend. */
+ * exit. Park its fiber forever and let retro_run signal the frontend; a later
+ * quiesce (the frontend will unload us) shuts the engine down from the park
+ * point via the yield hook above. */
 void libretro_engine_exit(int code)
 {
     core_log(RETRO_LOG_INFO, "engine requested exit (%d); signaling frontend shutdown\n", code);
@@ -737,6 +842,8 @@ static void CALLBACK core_engine_fiber_proc(void* param)
 
     for (;;)
     {
+        if (s_quiesce_mode != QUIESCE_NONE)
+            core_engine_shutdown_and_park("frame boundary");
         Window_Main_Loop(); /* one frame: game/menu logic + render */
         if (g_should_exit)
             s_engine_exit_requested = true;
@@ -744,19 +851,76 @@ static void CALLBACK core_engine_fiber_proc(void* param)
     }
 }
 
-/* The engine fiber is parked somewhere inside its loop -- possibly deep in a
- * modal menu -- and cannot be unwound safely; save settings, then drop the
- * fiber and its stack. In-place engine restart is a later milestone. */
-static void core_drop_engine_fiber(void)
+/* Frontend-fiber driver: bring the engine to a clean Main_Shutdown and delete
+ * its fiber. allow_unwind pumps real frames so modal menus pop cooperatively
+ * -- only safe with a live GL context (frames render). Returns true if the
+ * engine ran its shutdown; false means the fallback (WriteConf + force-close
+ * audio) was applied instead. Always leaves the fiber deleted. */
+static bool core_quiesce_engine(bool allow_unwind)
 {
-    if (g_core.engine_started && jkPlayer_bHasLoadedSettingsOnce)
-        jkPlayer_WriteConf(jkPlayer_playerShortName);
+    bool clean = s_engine_shutdown_done;
+
+    if (s_engine_fiber && g_core.engine_started && !clean)
+    {
+        if (allow_unwind)
+        {
+            s_quiesce_mode = QUIESCE_UNWIND;
+            g_should_exit = 1;
+            int frames = 0;
+            while (frames < QUIESCE_UNWIND_BUDGET_FRAMES && !s_engine_shutdown_done)
+            {
+                SwitchToFiber(s_engine_fiber);
+                frames++;
+            }
+            if (s_engine_shutdown_done)
+                core_log(RETRO_LOG_INFO, "unwind quiesce complete after %d frames\n", frames);
+            else
+                core_log(RETRO_LOG_WARN, "unwind quiesce incomplete after %d frames; forcing inline shutdown\n", frames);
+        }
+        if (!s_engine_shutdown_done)
+        {
+            s_quiesce_mode = QUIESCE_INLINE;
+            SwitchToFiber(s_engine_fiber); /* shutdown runs at the fiber's park point */
+        }
+        s_quiesce_mode = QUIESCE_NONE;
+        clean = s_engine_shutdown_done;
+    }
+
+    if (!clean && !s_engine_fiber && !g_core.engine_started && !g_core.engine_start_failed)
+    {
+        clean = true; /* engine never existed; nothing to quiesce */
+    }
+    else if (!clean)
+    {
+        /* Engine failed during boot or (unexpectedly) refused to shut down:
+         * save what we can and make sure no audio thread outlives the
+         * content to pin the DLL. */
+        core_log(RETRO_LOG_WARN, "engine quiesce fell back (started=%d failed=%d); force-closing audio device\n",
+                 g_core.engine_started, g_core.engine_start_failed);
+        if (jkPlayer_bHasLoadedSettingsOnce)
+            jkPlayer_WriteConf(jkPlayer_playerShortName);
+        libretro_ForceCloseAudioDevice();
+    }
+
+    /* GL teardown runs in context_destroy or here, whichever comes first
+     * (RetroArch destroys the context before unloading; retro_reset arrives
+     * with it alive). */
+    if (s_gl_ready && libretro_std3D_HasGlResources())
+    {
+        core_log(RETRO_LOG_INFO, "freeing engine GL resources (context still alive)\n");
+        std3D_FreeResources();
+    }
+
     if (s_engine_fiber)
     {
         DeleteFiber(s_engine_fiber);
         s_engine_fiber = NULL;
     }
     g_core.engine_started = false;
+    g_core.engine_start_failed = false;
+    s_engine_shutdown_done = false;
+    s_engine_exit_requested = false;
+    return clean;
 }
 
 /* ------------------------------------------------------------------------
@@ -808,6 +972,21 @@ RETRO_API void retro_init(void)
 
 RETRO_API void retro_deinit(void)
 {
+    /* retro_unload_game already quiesced; this is belt-and-suspenders for
+     * frontends that skip it. */
+    if (s_engine_fiber)
+    {
+        core_log(RETRO_LOG_WARN, "retro_deinit: engine fiber still alive; quiescing now\n");
+        core_quiesce_engine(false);
+    }
+    if (s_frontend_fiber)
+    {
+        /* Leave the frontend's main thread a plain thread again -- a fiber
+         * outliving its creating module is a stale-pointer hazard. */
+        ConvertFiberToThread();
+        s_frontend_fiber = NULL;
+    }
+    core_log(RETRO_LOG_INFO, "retro_deinit complete\n");
 }
 
 RETRO_API void retro_get_system_info(struct retro_system_info* info)
@@ -1000,7 +1179,14 @@ RETRO_API bool retro_load_game_special(unsigned game_type, const struct retro_ga
 
 RETRO_API void retro_unload_game(void)
 {
-    core_drop_engine_fiber();
+    core_log(RETRO_LOG_INFO, "unload: engine_started=%d ctx_alive=%d glctx=%p\n",
+             g_core.engine_started ? 1 : 0, g_core.context_alive ? 1 : 0,
+             (void*)wglGetCurrentContext());
+
+    /* Inline quiesce only: on RetroArch the GL context is already gone here
+     * (context_destroy freed the GL side), so no frame may render -- the
+     * engine shuts down at its current park point instead of unwinding. */
+    core_quiesce_engine(false);
     g_core.game_loaded = false;
 }
 
@@ -1083,9 +1269,26 @@ RETRO_API void retro_run(void)
 
 RETRO_API void retro_reset(void)
 {
-    /* In-place restart needs a clean engine teardown from a parked fiber;
-     * deferred (DESIGN.md M3). */
-    core_log(RETRO_LOG_WARN, "retro_reset is not supported yet; reload the content instead\n");
+    if (!g_core.game_loaded)
+        return;
+
+    core_log(RETRO_LOG_INFO, "retro_reset: restarting engine in-process (glctx=%p)\n",
+             (void*)wglGetCurrentContext());
+
+    /* Cooperative unwind: the GL context is alive across a reset, so pump
+     * real frames while modal menus pop one level per frame, then the engine
+     * runs its clean shutdown at the frame boundary. */
+    core_quiesce_engine(true);
+
+    /* Re-arm boot: retro_run recreates the fiber lazily and core_boot_engine
+     * re-runs OpenJKDF2_Globals_Reset -- the same in-process restart the
+     * standalone's own restart loop uses (main.c). */
+    memset(g_keyboard_state, 0, sizeof(g_keyboard_state));
+    g_core.mouse_abs_x = CORE_BASE_WIDTH / 2;
+    g_core.mouse_abs_y = CORE_BASE_HEIGHT / 2;
+    g_core.last_mouse_l = 0;
+    g_core.last_mouse_r = 0;
+    core_log(RETRO_LOG_INFO, "retro_reset: engine quiesced; fresh boot on next frame\n");
 }
 
 /* No save states: the engine has no snapshot mechanism. Native saves live in
