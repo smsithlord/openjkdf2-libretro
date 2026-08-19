@@ -39,7 +39,11 @@ arrays (or `bIsVisible = 0`), same as existing `TARGET_*` menu gating.
       (`stdControl_aAxisPos` / `KEY_JOY1_*`) from RetroPad state, mirroring
       `Platform/SDL2/stdControl.c`'s SDL_GameController layout; declare input
       descriptors so RetroArch shows sane bind names. Menu navigation via
-      `jkGuiRend_UpdateController` should come along for free.
+      `jkGuiRend_UpdateController` should come along for free. Honor the port-0
+      device selection (SET_CONTROLLER_INFO is already declared: "Keyboard +
+      Mouse" / "RetroPad"): pad injection active on RetroPad (the frontend
+      default), disabled when the user picks Keyboard + Mouse; keyboard/mouse
+      injection stays on in both modes.
 - [ ] Mouse buttons 3/4/5 (currently dead — engine reads them from
       `SDL_GetMouseState`): wire `RETRO_DEVICE_MOUSE` middle/4/5 into the same
       `stdControl` keys.

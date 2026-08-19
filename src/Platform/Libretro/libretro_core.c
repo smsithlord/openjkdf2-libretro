@@ -97,6 +97,12 @@ typedef struct core_state_t
     bool engine_started;
     bool engine_start_failed;
 
+    /* Port 0 device selection (SET_CONTROLLER_INFO). Defaults to the retro
+     * keyboard; frontends that never call set_controller_port_device get
+     * keyboard+mouse behavior, which is also what RETRO_DEVICE_JOYPAD gets
+     * until the M1 RetroPad mapping lands. */
+    unsigned port0_device;
+
     char basefolder[1024];
     char episode_name[256]; /* ROM filename without extension (for later autostart) */
     char cmdline[512];
@@ -769,6 +775,24 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
         return;
 
     cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &g_core.log);
+
+    /* This is a keyboard+mouse game first; the frontend's Controls menu should
+     * say so instead of assuming only a RetroPad exists. Note RetroArch still
+     * defaults the port SELECTION to RetroPad regardless of list order --
+     * that's fine: keyboard/mouse injection is always active no matter the
+     * selection (the engine natively reads all devices at once), so the game
+     * defaults to keyboard in practice. The selection gates only the M1
+     * RetroPad mapping; picking "Keyboard + Mouse" will opt out of pad
+     * injection (e.g. to avoid RetroArch's keyboard->RetroPad double-binds). */
+    static const struct retro_controller_description port0_types[] = {
+        { "Keyboard + Mouse", RETRO_DEVICE_KEYBOARD },
+        { "RetroPad", RETRO_DEVICE_JOYPAD },
+    };
+    static const struct retro_controller_info ports[] = {
+        { port0_types, 2 },
+        { NULL, 0 },
+    };
+    cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*)ports);
 }
 
 RETRO_API void retro_set_video_refresh(retro_video_refresh_t cb) { g_core.video_cb = cb; }
@@ -779,6 +803,7 @@ RETRO_API void retro_set_input_state(retro_input_state_t cb) { g_core.input_stat
 
 RETRO_API void retro_init(void)
 {
+    g_core.port0_device = RETRO_DEVICE_KEYBOARD;
 }
 
 RETRO_API void retro_deinit(void)
@@ -1076,7 +1101,13 @@ RETRO_API unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
 
 RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device)
 {
-    (void)port; (void)device;
+    if (port != 0)
+        return;
+    g_core.port0_device = device;
+    core_log(RETRO_LOG_INFO, "port 0 device: %s (%u)\n",
+             device == RETRO_DEVICE_KEYBOARD ? "Keyboard + Mouse" :
+             device == RETRO_DEVICE_JOYPAD   ? "RetroPad" : "other",
+             device);
 }
 
 RETRO_API void retro_cheat_reset(void) {}
