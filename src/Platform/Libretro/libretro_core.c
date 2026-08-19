@@ -76,6 +76,7 @@ extern int libretro_std3D_HasGlResources(void);
 extern void libretro_ForcePopActiveMenu(void);
 extern void libretro_ForceCloseAudioDevice(void);
 extern int libretro_stdSound_RenderAudio(int16_t* pOut, int nFrames);
+extern void libretro_stdMci_Pump(void); /* stdMci.c: music -> AL stream */
 
 #ifndef OPENJKDF2_RELEASE_VERSION_STRING
 #define OPENJKDF2_RELEASE_VERSION_STRING "unknown"
@@ -1489,6 +1490,9 @@ RETRO_API void retro_run(void)
      * the engine's sound startup (or after shutdown / loopback fallback). */
     if (g_core.audio_batch_cb)
     {
+        /* Keep the stdMci music stream fed (SDL_mixer decode -> queued AL
+         * buffers) before pulling the mix that consumes it. */
+        libretro_stdMci_Pump();
         if (!libretro_stdSound_RenderAudio(g_core.audio_out, CORE_AUDIO_FRAMES))
             memset(g_core.audio_out, 0, sizeof(g_core.audio_out));
         g_core.audio_batch_cb(g_core.audio_out, CORE_AUDIO_FRAMES);

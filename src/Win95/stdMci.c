@@ -586,6 +586,10 @@ flex_d_t stdMci_GetTrackLength(int track)
 
 #include <SDL_mixer.h>
 
+#ifdef LIBRETRO_BUILD
+#include "Win95/stdSound.h" // AL types: music streams into stdSound's loopback mix
+#endif
+
 int stdMci_trackFrom;
 int stdMci_trackTo;
 int stdMci_trackCurrent;
@@ -606,6 +610,96 @@ static MIX_Track* stdMci_pTrack;
 // would "helpfully" advance to the next track and restart playback (this made
 // music keep playing after exiting a level).
 static int stdMci_bStopInhibit;
+
+#ifdef LIBRETRO_BUILD
+// M2 audio consolidation: no real SDL audio device exists under the frontend.
+// The mixer is a device-less MIX_CreateMixer(); once per retro_run the core
+// calls libretro_stdMci_Pump(), which MIX_Generate()s the music mix and
+// queues it on an OpenAL streaming source -- stdSound's loopback device then
+// folds music into the same final mix as SFX/cutscene audio (one mixer, no
+// manual sample summing). Engine fiber and core share one thread: no locking.
+#define STDMCI_LR_FRAMES  800  /* one 60fps tick at 48kHz */
+#define STDMCI_LR_NUMBUFS 8    /* ~133ms queue depth: pump refills 1/tick */
+static ALuint stdMci_lrSource;
+static ALuint stdMci_lrBufs[STDMCI_LR_NUMBUFS];
+static ALuint stdMci_lrFreeBufs[STDMCI_LR_NUMBUFS];
+static int stdMci_lrNumFree;
+static int stdMci_lrbAlReady;
+static int16_t stdMci_lrPcm[STDMCI_LR_FRAMES * 2];
+
+// Drop the AL streaming objects. Safe without a live AL context (the objects
+// died with it); safe to call repeatedly.
+static void stdMci_lrReleaseAL(void)
+{
+    if (stdMci_lrbAlReady && alcGetCurrentContext())
+    {
+        alSourceStop(stdMci_lrSource);
+        alDeleteSources(1, &stdMci_lrSource);
+        alDeleteBuffers(STDMCI_LR_NUMBUFS, stdMci_lrBufs);
+    }
+    stdMci_lrbAlReady = 0;
+    stdMci_lrSource = 0;
+    stdMci_lrNumFree = 0;
+}
+
+void libretro_stdMci_Pump(void)
+{
+    if (!stdMci_bInitted || !stdMci_pMixer || !stdMci_pTrack)
+        return;
+    // stdSound owns the AL context; after a force-close (unload fallback)
+    // there is none and the stream objects are already gone.
+    if (!alcGetCurrentContext())
+        return;
+
+    if (!stdMci_lrbAlReady)
+    {
+        alGetError();
+        alGenSources(1, &stdMci_lrSource);
+        alGenBuffers(STDMCI_LR_NUMBUFS, stdMci_lrBufs);
+        if (alGetError() != AL_NO_ERROR)
+        {
+            stdMci_lrSource = 0;
+            return;
+        }
+        // 2D stream: pin to the listener, ignore the 3D distance model.
+        alSourcei(stdMci_lrSource, AL_SOURCE_RELATIVE, AL_TRUE);
+        alSource3f(stdMci_lrSource, AL_POSITION, 0.0f, 0.0f, 0.0f);
+        alSourcef(stdMci_lrSource, AL_ROLLOFF_FACTOR, 0.0f);
+        alSourcef(stdMci_lrSource, AL_GAIN, 1.0f); // volume lives in MIX_SetTrackGain
+        _memcpy(stdMci_lrFreeBufs, stdMci_lrBufs, sizeof(stdMci_lrBufs));
+        stdMci_lrNumFree = STDMCI_LR_NUMBUFS;
+        stdMci_lrbAlReady = 1;
+    }
+
+    ALint nProcessed = 0;
+    alGetSourcei(stdMci_lrSource, AL_BUFFERS_PROCESSED, &nProcessed);
+    while (nProcessed-- > 0 && stdMci_lrNumFree < STDMCI_LR_NUMBUFS)
+    {
+        ALuint b = 0;
+        alSourceUnqueueBuffers(stdMci_lrSource, 1, &b);
+        stdMci_lrFreeBufs[stdMci_lrNumFree++] = b;
+    }
+
+    // Top up the queue while a track object is loaded. MIX_Generate drives
+    // the whole SDL_mixer pipeline synchronously (including the
+    // track-finished callback that advances multi-track ranges).
+    while (stdMci_lrNumFree > 0 && stdMci_music)
+    {
+        int nBytes = MIX_Generate(stdMci_pMixer, stdMci_lrPcm, sizeof(stdMci_lrPcm));
+        if (nBytes <= 0)
+            break;
+        ALuint b = stdMci_lrFreeBufs[--stdMci_lrNumFree];
+        alBufferData(b, AL_FORMAT_STEREO16, stdMci_lrPcm, nBytes, 48000);
+        alSourceQueueBuffers(stdMci_lrSource, 1, &b);
+    }
+
+    ALint state = 0, nQueued = 0;
+    alGetSourcei(stdMci_lrSource, AL_SOURCE_STATE, &state);
+    alGetSourcei(stdMci_lrSource, AL_BUFFERS_QUEUED, &nQueued);
+    if (state != AL_PLAYING && nQueued > 0)
+        alSourcePlay(stdMci_lrSource);
+}
+#endif // LIBRETRO_BUILD
 
 void stdMci_trackStart(int track);
 
@@ -638,16 +732,45 @@ int stdMci_Startup()
 
     stdMci_bInitted = 1;
 
+#ifdef LIBRETRO_BUILD
+    // Decode-only under the frontend: force SDL's dummy audio backend BEFORE
+    // MIX_Init's SDL_Init(SDL_INIT_AUDIO) -- WASAPI init alone would spawn a
+    // device-notification thread, and the engine must open no real device.
+    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+    // A previous boot's AL object names died with stdSound's context; forget
+    // them (normal shutdown already did, the force-close fallback didn't).
+    stdMci_lrbAlReady = 0;
+    stdMci_lrSource = 0;
+    stdMci_lrNumFree = 0;
+#endif
+
     if (!MIX_Init()) {
         stdPlatform_Printf("stdMci: Failed MIX_Init? %s\n", SDL_GetError());
         return 1;
     }
 
+#ifdef LIBRETRO_BUILD
+    // Device-less mixer in the core's output format: the pump pulls the mix
+    // with MIX_Generate and streams it into stdSound's loopback device.
+    {
+        SDL_AudioSpec spec;
+        spec.format = SDL_AUDIO_S16LE;
+        spec.channels = 2;
+        spec.freq = 48000;
+        stdMci_pMixer = MIX_CreateMixer(&spec);
+    }
+    if (!stdMci_pMixer) {
+        stdPlatform_Printf("stdMci: Failed MIX_CreateMixer? %s\n", SDL_GetError());
+        return 1;
+    }
+    stdPlatform_Printf("stdMci: device-less SDL_mixer -> OpenAL stream -> loopback (music via the frontend)\n");
+#else
     stdMci_pMixer = MIX_CreateMixerDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, NULL);
     if (!stdMci_pMixer) {
         stdPlatform_Printf("stdMci: Failed MIX_CreateMixerDevice? %s\n", SDL_GetError());
         return 1;
     }
+#endif
 
     stdMci_pTrack = MIX_CreateTrack(stdMci_pMixer);
     if (stdMci_pTrack) {
@@ -663,6 +786,12 @@ int stdMci_Startup()
 void stdMci_Shutdown()
 {
     stdMci_bInitted = 0;
+
+#ifdef LIBRETRO_BUILD
+    // sithShutdown order is sithSoundMixer (us) before sithSound, so
+    // stdSound's AL context is still alive here for a clean source delete.
+    stdMci_lrReleaseAL();
+#endif
 
     // A playing track is stopped as part of destruction, which would fire the
     // stopped-callback and try to start the next song mid-teardown.
