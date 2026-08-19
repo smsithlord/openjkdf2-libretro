@@ -2519,35 +2519,91 @@ void std3D_DrawSceneFbo()
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
+// --- std3D_DoTex redundant-GL-state cache ----------------------------------
+// (AAOpenJKDF2 9d3db5ac.) Within one std3D_DrawRenderList pass, std3D_DoTex is
+// the only code that touches texture units 0/3/4 and the emissive/albedo/
+// displacement/tex_mode uniforms, yet it is re-invoked per batch -- often with
+// identical state (a batch can break on a flags change while the texture is
+// unchanged, and most surfaces share the blank emissive/displace textures and
+// default factors). Skip the GL call when the value is unchanged. The cache is
+// reset at the top of std3D_DrawRenderList so each pass starts from a
+// known-invalid state (also makes it safe across context loss).
+static GLuint dotex_cache_tex0 = (GLuint)-1;
+static GLuint dotex_cache_tex3 = (GLuint)-1;
+static GLuint dotex_cache_tex4 = (GLuint)-1;
+static float  dotex_cache_emissive[3] = { -1.0f, -1.0f, -1.0f };
+static float  dotex_cache_albedo[4]   = { -1.0f, -1.0f, -1.0f, -1.0f };
+static float  dotex_cache_displace    = -1.0f;
+static int    dotex_cache_tex_mode    = -1;
+
+static void std3D_DoTexCacheReset(void)
+{
+    dotex_cache_tex0 = dotex_cache_tex3 = dotex_cache_tex4 = (GLuint)-1;
+    dotex_cache_emissive[0] = dotex_cache_emissive[1] = dotex_cache_emissive[2] = -1.0f;
+    dotex_cache_albedo[0] = dotex_cache_albedo[1] = dotex_cache_albedo[2] = dotex_cache_albedo[3] = -1.0f;
+    dotex_cache_displace = -1.0f;
+    dotex_cache_tex_mode = -1;
+}
+
+static void std3D_BindTexCached(GLenum unit, GLuint id, GLuint* cache)
+{
+    if (*cache == id)
+        return;
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_2D, id);
+    *cache = id;
+}
+
+static void std3D_Uniform1iCached(GLint loc, GLint v, int* cache)
+{
+    if (*cache == v)
+        return;
+    glUniform1i(loc, v);
+    *cache = v;
+}
+
+static void std3D_Uniform1fCached(GLint loc, float v, float* cache)
+{
+    if (*cache == v)
+        return;
+    glUniform1f(loc, v);
+    *cache = v;
+}
+
+static void std3D_Uniform3fCached(GLint loc, float a, float b, float c, float* cache)
+{
+    if (cache[0] == a && cache[1] == b && cache[2] == c)
+        return;
+    glUniform3f(loc, a, b, c);
+    cache[0] = a; cache[1] = b; cache[2] = c;
+}
+
+static void std3D_Uniform4fCached(GLint loc, float a, float b, float c, float d, float* cache)
+{
+    if (cache[0] == a && cache[1] == b && cache[2] == c && cache[3] == d)
+        return;
+    glUniform4f(loc, a, b, c, d);
+    cache[0] = a; cache[1] = b; cache[2] = c; cache[3] = d;
+}
+
 void std3D_DoTex(rdDDrawSurface* tex, rdTri* tri, int tris_left)
 {
     if (!tex) {
-        glActiveTexture(GL_TEXTURE0 + 3);
-        glBindTexture(GL_TEXTURE_2D, blank_tex); // emissive
-        glActiveTexture(GL_TEXTURE0 + 4);
-        glBindTexture(GL_TEXTURE_2D, blank_tex); // displace
+        std3D_BindTexCached(3, blank_tex, &dotex_cache_tex3); // emissive
+        std3D_BindTexCached(4, blank_tex, &dotex_cache_tex4); // displace
 
-        glActiveTexture(GL_TEXTURE0 + 0);
-        glBindTexture(GL_TEXTURE_2D, blank_tex_white);
-        glUniform1i(uniform_tex_mode, TEX_MODE_TEST);
+        std3D_BindTexCached(0, blank_tex_white, &dotex_cache_tex0);
+        std3D_Uniform1iCached(uniform_tex_mode, TEX_MODE_TEST, &dotex_cache_tex_mode);
         glUniform1i(uniform_blend_mode, 2);
+        glActiveTexture(GL_TEXTURE0 + 0);
         return;
     }
     int tex_id = tex->texture_id;
-    glActiveTexture(GL_TEXTURE0 + 0);
-    if (tex_id == 0)
-        glBindTexture(GL_TEXTURE_2D, blank_tex_white);
-    else
-        glBindTexture(GL_TEXTURE_2D, tex_id);
+    std3D_BindTexCached(0, (GLuint)(tex_id ? tex_id : blank_tex_white), &dotex_cache_tex0);
 
     int emiss_tex_id = tex->emissive_texture_id;
-    glActiveTexture(GL_TEXTURE0 + 3);
-    if (emiss_tex_id == 0) {
-        glBindTexture(GL_TEXTURE_2D, blank_tex);
-    }
-    else {
-        //printf("emissive tex id %x\n", emiss_tex_id);
-        glBindTexture(GL_TEXTURE_2D, emiss_tex_id);
+    std3D_BindTexCached(3, (GLuint)(emiss_tex_id ? emiss_tex_id : blank_tex), &dotex_cache_tex3);
+    if (emiss_tex_id != 0) {
 
         // HACK
         if (tri[0].flags & 0x600) {
@@ -2555,7 +2611,7 @@ void std3D_DoTex(rdDDrawSurface* tex, rdTri* tri, int tris_left)
             //last_flags |= 0x200;
         }
 
-        
+
         for (int i = 0; i < tris_left; i++) {
             if (tri[i].texture != tex) break;
             if (tri[i].flags & 0x600) {
@@ -2565,34 +2621,32 @@ void std3D_DoTex(rdDDrawSurface* tex, rdTri* tri, int tris_left)
     }
 
     int displace_tex_id = tex->displacement_texture_id;
-    glActiveTexture(GL_TEXTURE0 + 4);
-    if (displace_tex_id == 0) {
-        glBindTexture(GL_TEXTURE_2D, blank_tex);
-    }
-    else {
-        glBindTexture(GL_TEXTURE_2D, displace_tex_id);
-    }
+    std3D_BindTexCached(4, (GLuint)(displace_tex_id ? displace_tex_id : blank_tex), &dotex_cache_tex4);
     //if (tex->emissive_factor[0] != 0.0 || tex->emissive_factor[1] != 0.0 || tex->emissive_factor[2] != 0.0)
     //    stdPlatform_Printf("%f %f %f\n", tex->emissive_factor[0], tex->emissive_factor[1], tex->emissive_factor[2]);
     float emissive_mult = (jkPlayer_enableBloom ? 1.0 : 5.0);
-    glUniform3f(uniform_emissiveFactor, tex->emissive_factor[0] * emissive_mult, tex->emissive_factor[1] * emissive_mult, tex->emissive_factor[2] * emissive_mult);
-    glUniform4f(uniform_albedoFactor, tex->albedo_factor[0], tex->albedo_factor[1], tex->albedo_factor[2], tex->albedo_factor[3]);
+    std3D_Uniform3fCached(uniform_emissiveFactor, tex->emissive_factor[0] * emissive_mult, tex->emissive_factor[1] * emissive_mult, tex->emissive_factor[2] * emissive_mult, dotex_cache_emissive);
+    std3D_Uniform4fCached(uniform_albedoFactor, tex->albedo_factor[0], tex->albedo_factor[1], tex->albedo_factor[2], tex->albedo_factor[3], dotex_cache_albedo);
     if (tex->displacement_factor) {
         //printf("%f\n", tex->displacement_factor);
         //tex->displacement_factor = -0.4;
     }
-    glUniform1f(uniform_displacement_factor, tex->displacement_factor);
+    std3D_Uniform1fCached(uniform_displacement_factor, tex->displacement_factor, &dotex_cache_displace);
     glActiveTexture(GL_TEXTURE0 + 0);
 
+    int new_tex_mode;
     if (!jkPlayer_enableTextureFilter)
-        glUniform1i(uniform_tex_mode, tex->is_16bit ? TEX_MODE_16BPP : TEX_MODE_WORLDPAL);
+        new_tex_mode = tex->is_16bit ? TEX_MODE_16BPP : TEX_MODE_WORLDPAL;
     else
-        glUniform1i(uniform_tex_mode, tex->is_16bit ? TEX_MODE_BILINEAR_16BPP : TEX_MODE_BILINEAR);
-    
+        new_tex_mode = tex->is_16bit ? TEX_MODE_BILINEAR_16BPP : TEX_MODE_BILINEAR;
+    if (tex_id == 0)
+        new_tex_mode = TEX_MODE_TEST;
+    std3D_Uniform1iCached(uniform_tex_mode, new_tex_mode, &dotex_cache_tex_mode);
+
      glActiveTexture(GL_TEXTURE0 + 0);
 
-    if (tex_id == 0)
-        glUniform1i(uniform_tex_mode, TEX_MODE_TEST);
+    // tex_mode (including the tex_id==0 -> TEX_MODE_TEST override) is applied
+    // above via the cached setter.
 }
 
 void std3D_DrawRenderList()
@@ -2605,8 +2659,9 @@ void std3D_DrawRenderList()
 
     GLenum bufs[4] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
     glDrawBuffers(4, bufs);
-    
+
     last_tex = NULL;
+    std3D_DoTexCacheReset(); // start each render-list pass from an invalid cache
 
     // Generate aVertices list
     D3DVERTEX* vertexes = GL_tmpVertices;

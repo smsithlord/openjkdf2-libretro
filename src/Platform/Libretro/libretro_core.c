@@ -175,6 +175,60 @@ static void core_log(enum retro_log_level level, const char* fmt, ...)
         fprintf(stderr, "[openjkdf2] %s", buf);
 }
 
+/* Engine print mirror (stdPlatform_Printf's LIBRETRO_BUILD hook; devdocs/07
+ * §5): every engine subsystem's console output lands here, one formatted
+ * chunk at a time. Forward to the frontend's log, with consecutive-duplicate
+ * suppression (some engine states print the same line every frame) and an
+ * optional OPENJKDF2_LOG=<path> file mirror, flushed per line so a crash
+ * still leaves the tail that explains it. */
+void libretro_EnginePrint(const char* line)
+{
+    static char s_last[256];
+    static int s_repeats;
+    static FILE* s_mirror;
+    static bool s_mirror_tried;
+
+    if (!line || !line[0])
+        return;
+
+    /* Normalize: strip trailing newline(s); skip ANSI console-control spam. */
+    char buf[256];
+    strncpy(buf, line, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+    size_t len = strlen(buf);
+    while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
+        buf[--len] = 0;
+    if (!len || buf[0] == '\x1b')
+        return;
+
+    if (!s_mirror_tried)
+    {
+        s_mirror_tried = true;
+        const char* path = getenv("OPENJKDF2_LOG");
+        if (path && path[0])
+            s_mirror = fopen(path, "a");
+    }
+    if (s_mirror)
+    {
+        fputs(buf, s_mirror);
+        fputc('\n', s_mirror);
+        fflush(s_mirror);
+    }
+
+    if (strcmp(buf, s_last) == 0)
+    {
+        s_repeats++;
+        return;
+    }
+    if (s_repeats > 0)
+    {
+        core_log(RETRO_LOG_INFO, "engine: (last line repeated %d more times)\n", s_repeats);
+        s_repeats = 0;
+    }
+    strcpy(s_last, buf);
+    core_log(RETRO_LOG_INFO, "engine: %s\n", buf);
+}
+
 /* ------------------------------------------------------------------------
  * Key mapping
  * ------------------------------------------------------------------------ */

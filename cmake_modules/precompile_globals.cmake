@@ -16,18 +16,19 @@ else()
     # Print the Python executable path
     message(STATUS "Python executable: ${Python3_EXECUTABLE}")
     set(PYTHON_EXE "${Python3_EXECUTABLE}")
-    set(COGAPP_DEPENDS "${Python3_EXECUTABLE}")
+    # cogapp is a pip module run via this same python — there's no separate cog
+    # binary to depend on. Leave this EMPTY: passing python.exe as both PYTHON_EXE
+    # and COGAPP_DEPENDS lists it twice in the custom-command DEPENDS, which makes
+    # MSBuild's CustomBuild tracker report "list of dependencies has changed since
+    # the last build" every time — re-running cog and relinking on every build even
+    # with no source changes. (AAOpenJKDF2 39c0e27f.)
+    set(COGAPP_DEPENDS "")
 endif()
 
 list(JOIN EMBEDDED_RESOURCES "+" EMBEDDED_RESOURCES_SEPARATED)
 
-# All of our pre-build steps
-add_custom_command(
-    OUTPUT ${GLOBALS_C}
-    COMMAND ${PYTHON_EXE} -m cogapp -d -D symbols_fpath="${SYMBOLS_FILE}" -D project_root="${PROJECT_SOURCE_DIR}" -D embedded_resources="${EMBEDDED_RESOURCES_SEPARATED}" -o ${GLOBALS_C} ${GLOBALS_C_COG}
-    DEPENDS ${SYMBOLS_FILE} ${GLOBALS_C_COG} ${GLOBALS_H} ${EMBEDDED_RESOURCES} ${PYTHON_EXE} ${COGAPP_DEPENDS}
-)
-
+# Bootstrap the cog venv first (non-MSVC) so the generator command below can
+# depend on it. On MSVC cog runs via the system python (no venv).
 if(NOT PLAT_MSVC)
     add_custom_command(
         OUTPUT ${PYTHON_EXE}
@@ -40,10 +41,22 @@ if(NOT PLAT_MSVC)
     )
 endif()
 
+# Generate globals.h and globals.c with cog, both from a single custom command
+# (no inter-rule chain). NOTE: the Visual Studio generator re-runs this CustomBuild
+# on every build anyway — its tracker reports "list of dependencies has changed
+# since the last build" each time, a known quirk we couldn't fully suppress. To
+# keep that from forcing a needless full recompile every build, cog writes to a
+# .tmp and we copy_if_different into place, so globals.h/.c only change mtime when
+# their CONTENT actually changes. Result: a no-source-change build does a fast cog
+# pass + a quick relink, with NO recompile of globals.c or of everything that
+# includes the (widely-included) generated globals.h. (AAOpenJKDF2 39c0e27f.)
 add_custom_command(
-    OUTPUT ${GLOBALS_H}
-    COMMAND ${PYTHON_EXE} -m cogapp -d -D symbols_fpath="${SYMBOLS_FILE}" -D project_root="${PROJECT_SOURCE_DIR}" -D embedded_resources="${EMBEDDED_RESOURCES_SEPARATED}" -o ${GLOBALS_H} ${GLOBALS_H_COG}
-    DEPENDS ${SYMBOLS_FILE} ${GLOBALS_H_COG} ${PYTHON_EXE} ${COGAPP_DEPENDS} ${EMBEDDED_RESOURCES}
+    OUTPUT ${GLOBALS_H} ${GLOBALS_C}
+    COMMAND ${PYTHON_EXE} -m cogapp -d -D symbols_fpath="${SYMBOLS_FILE}" -D project_root="${PROJECT_SOURCE_DIR}" -D embedded_resources="${EMBEDDED_RESOURCES_SEPARATED}" -o ${GLOBALS_H}.tmp ${GLOBALS_H_COG}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${GLOBALS_H}.tmp ${GLOBALS_H}
+    COMMAND ${PYTHON_EXE} -m cogapp -d -D symbols_fpath="${SYMBOLS_FILE}" -D project_root="${PROJECT_SOURCE_DIR}" -D embedded_resources="${EMBEDDED_RESOURCES_SEPARATED}" -o ${GLOBALS_C}.tmp ${GLOBALS_C_COG}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${GLOBALS_C}.tmp ${GLOBALS_C}
+    DEPENDS ${SYMBOLS_FILE} ${GLOBALS_H_COG} ${GLOBALS_C_COG} ${EMBEDDED_RESOURCES} ${PYTHON_EXE} ${COGAPP_DEPENDS}
 )
 
 # Gather the cog generation into one target. Many sith_engine translation units

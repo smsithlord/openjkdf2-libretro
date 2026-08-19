@@ -34,14 +34,34 @@ endif()
 # TODO: Not sure why SDL_mixer doesn't do link these into SDL_mixer.a?
 
 if(PLAT_MSVC)
-    set(SDL_MIXER_DEPS  "${SDL_MIXER_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}vorbisfile${CMAKE_STATIC_LIBRARY_SUFFIX}"
+    # The SDL_mixer ExternalProject builds the vendored audio deps as a VS
+    # multi-config sub-build, but its install step stages a SINGLE
+    # config-agnostic copy of each into lib/. Alternating engine Debug/Release
+    # builds therefore clobber each other's CRT flavor there: a Release engine
+    # link that happens to find a Debug-staged opus.lib pulls MSVCRTD and fails
+    # (LNK2001 __imp__CrtDbgReportW / LNK4098 MSVCRTD conflicts). To make each
+    # engine config self-consistent regardless of which config built the tree
+    # last, LINK the config-specific raw sub-build outputs (external/*-build/
+    # $<CONFIG>/) instead of the shared lib/ install copies. The lib/ copies
+    # are still produced by install, so they remain the declared
+    # BUILD_BYPRODUCTS below. (AAOpenJKDF2 12a273ce; paths adapted to the
+    # SDL3_mixer 3.2.4 vendored layout.)
+    set(SDL_MIXER_DEPS_BYPRODUCTS
+                        "${SDL_MIXER_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}vorbisfile${CMAKE_STATIC_LIBRARY_SUFFIX}"
                         "${SDL_MIXER_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}vorbis${CMAKE_STATIC_LIBRARY_SUFFIX}"
                         "${SDL_MIXER_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}ogg${CMAKE_STATIC_LIBRARY_SUFFIX}"
                         "${SDL_MIXER_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}opusfile${CMAKE_STATIC_LIBRARY_SUFFIX}"
                         "${SDL_MIXER_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}opus${CMAKE_STATIC_LIBRARY_SUFFIX}"
     )
+    set(SDL_MIXER_DEPS  "${SDL_MIXER_ROOT}/external/vorbis-build/lib/$<CONFIG>/${CMAKE_STATIC_LIBRARY_PREFIX}vorbisfile${CMAKE_STATIC_LIBRARY_SUFFIX}"
+                        "${SDL_MIXER_ROOT}/external/vorbis-build/lib/$<CONFIG>/${CMAKE_STATIC_LIBRARY_PREFIX}vorbis${CMAKE_STATIC_LIBRARY_SUFFIX}"
+                        "${SDL_MIXER_ROOT}/external/ogg-build/$<CONFIG>/${CMAKE_STATIC_LIBRARY_PREFIX}ogg${CMAKE_STATIC_LIBRARY_SUFFIX}"
+                        "${SDL_MIXER_ROOT}/external/opusfile-build/$<CONFIG>/${CMAKE_STATIC_LIBRARY_PREFIX}opusfile${CMAKE_STATIC_LIBRARY_SUFFIX}"
+                        "${SDL_MIXER_ROOT}/external/opus-build/$<CONFIG>/${CMAKE_STATIC_LIBRARY_PREFIX}opus${CMAKE_STATIC_LIBRARY_SUFFIX}"
+    )
 elseif(TARGET_ANDROID)
     set(SDL_MIXER_DEPS  SDL::SDL) # ????
+    set(SDL_MIXER_DEPS_BYPRODUCTS ${SDL_MIXER_DEPS})
 else()
     set(SDL_MIXER_DEPS  SDL::SDL
                         "${SDL_MIXER_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}vorbisfile${CMAKE_STATIC_LIBRARY_SUFFIX}"
@@ -50,6 +70,7 @@ else()
                         "${SDL_MIXER_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}opusfile${CMAKE_STATIC_LIBRARY_SUFFIX}"
                         "${SDL_MIXER_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}opus${CMAKE_STATIC_LIBRARY_SUFFIX}"
     )
+    set(SDL_MIXER_DEPS_BYPRODUCTS ${SDL_MIXER_DEPS})
 endif()
 
 if(PLAT_MSVC)
@@ -137,7 +158,7 @@ ExternalProject_Add(
                         -DSDL3_DIR:PATH=${SDL_ROOT}/lib/cmake/SDL3
 
     DEPENDS             SDL::SDL
-    BUILD_BYPRODUCTS    ${SDL_MIXER_LIBRARIES} ${SDL_MIXER_DEPS}
+    BUILD_BYPRODUCTS    ${SDL_MIXER_LIBRARIES} ${SDL_MIXER_DEPS_BYPRODUCTS}
 )
 
 set(SDL_MIXER_VERSION 3.2.4)

@@ -86,6 +86,31 @@ macro(plat_link_and_package)
     target_link_libraries(sith_engine PRIVATE nlohmann_json::nlohmann_json)
     target_link_libraries(sith_engine PRIVATE opengl32 ws2_32 uuid ole32)
 
+    # --- Performance flags (optimized configs only) -------------------------
+    # AAOpenJKDF2 9d3db5ac. /GL + /LTCG: whole-program / link-time code
+    # generation (~5-10% in the fork's measurements). sith_engine is an OBJECT
+    # library holding all the hot render code; its /GL objects flow straight
+    # into the DLL link, so /LTCG on ${BIN_NAME} covers the whole engine.
+    # /arch:AVX2 deliberately NOT taken — RetroArch cores run on old hardware;
+    # revisit near release with tester data (devdocs/07 §6).
+    set(OPENJKDF2_PERF_COPTS $<$<CONFIG:Release,RelWithDebInfo>:/GL>)
+    target_compile_options(sith_engine PRIVATE ${OPENJKDF2_PERF_COPTS})
+    target_compile_options(${BIN_NAME} PRIVATE ${OPENJKDF2_PERF_COPTS})
+    target_link_options(${BIN_NAME} PRIVATE $<$<CONFIG:Release,RelWithDebInfo>:/LTCG>)
+
+    # --- Crash symbols (optimized configs) ----------------------------------
+    # AAOpenJKDF2 b924df8d hunk. The VS generator emits no debug info for
+    # Release, so a user crash (or our Event Log triage) shows raw offsets.
+    # /Zi (compile) + /DEBUG (link) emit openjkdf2_libretro.pdb WITHOUT
+    # changing optimization — /GL objects defer debug info to the /LTCG
+    # backend, which writes the PDB at link time. Keep the PDB per release so
+    # crash dumps symbolicate. (Per-target compiler PDBs: /Zi is parallel-safe
+    # here, no /FS needed.)
+    set(OPENJKDF2_DEBUG_COPTS $<$<CONFIG:Release,RelWithDebInfo>:/Zi>)
+    target_compile_options(sith_engine PRIVATE ${OPENJKDF2_DEBUG_COPTS})
+    target_compile_options(${BIN_NAME} PRIVATE ${OPENJKDF2_DEBUG_COPTS})
+    target_link_options(${BIN_NAME} PRIVATE $<$<CONFIG:Release,RelWithDebInfo>:/DEBUG>)
+
     # The core's runtime DLL deps must sit next to it (RetroArch loads the core
     # from its cores dir; document copying these alongside).
     if(TARGET_USE_OPENAL)

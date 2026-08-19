@@ -1119,6 +1119,20 @@ int stdPlatform_Printf(const char *fmt, ...)
     int ret = vprintf(fmt, aArgs);
     va_end (aArgs);
 
+#ifdef LIBRETRO_BUILD
+    // Libretro: stdout goes nowhere under a frontend; this is the single
+    // chokepoint every subsystem's prints land at, so mirror each line to the
+    // core, which forwards to the frontend's retro_log (and an optional
+    // OPENJKDF2_LOG file for user bug reports). (Fact per devdocs/07 §5.)
+    {
+        extern void libretro_EnginePrint(const char* line);
+        va_start(aArgs, fmt);
+        vsnprintf(tmp, sizeof(tmp), fmt, aArgs);
+        va_end(aArgs);
+        libretro_EnginePrint(tmp);
+    }
+#endif
+
 #ifdef QUAKE_CONSOLE
     va_start (aArgs, fmt);
     vsnprintf(tmp, sizeof(tmp), fmt, aArgs);
