@@ -136,8 +136,16 @@ core submits silence to keep frontend pacing.
 
 - De-SDL the core entirely (TWL/Dreamcast-style platform files) — drops the
   SDL3/SDL_mixer dependency; prerequisite for exotic libretro platforms.
-- Save states: no engine snapshot support; would be a research project
-  (fiber stack + globals + GL state). Not planned for 1.0.
+- Optional save relocation: redirect `player/` + `persist/` + settings writes
+  into the frontend's save directory (`GET_SAVE_DIRECTORY`) so RetroArch's
+  backup/cloud-sync tooling covers JK saves. Native files stay the mechanism —
+  the SRAM (.srm) interface is deliberately unused (fixed-size blob, wrong
+  shape for file-based saves; `retro_get_memory_size` returns 0 on purpose).
+- Save states: no engine snapshot support, and the engine-on-a-fiber design
+  makes true snapshots impossible (a parked C stack isn't serializable).
+  Wrapping native saves would break rewind/run-ahead/netplay expectations;
+  `retro_serialize_size() == 0` is the honest contract. If ever revisited:
+  RETRO_SERIALIZATION_QUIRK_* flags are the only defensible shape. Not 1.0.
 - RetroAchievements: needs a stable memory map; investigate post-1.0.
 - MoTS/DF2 dual-install QoL, playlist/thumbnail assets for RetroArch.
 
