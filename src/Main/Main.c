@@ -56,6 +56,9 @@
 #include "Main/jkSmack.h"
 #include "Main/smack.h"
 #include "Main/jkMain.h"
+#ifdef LIBRETRO_BUILD
+#include "Main/jkSession.h"
+#endif
 #include "Main/jkQuakeConsole.h"
 #include "Engine/rdroid.h"
 #include "Main/sithMain.h"
@@ -121,11 +124,22 @@ int Main_StartupDedicated(int bFullyDedicated)
     jkSmack_nextGuiState = JK_GAMEMODE_TITLE;
     Window_SetDrawHandlers(stdDisplay_DrawAndFlipGdi, stdDisplay_SetCooperativeLevel);
 
+#ifdef LIBRETRO_BUILD
+    // Direct boot (jkSession_ArmBoot): an explicit episode with an EMPTY map
+    // means "start this episode from the top" -- don't let the stock defaults
+    // swap in JK1MP/m2.jkl (wrong for SP campaign GOBs), and skip the
+    // registry round-trip below, where a stale serverEpisodeGob/serverMapJkl
+    // would beat a half-specified boot.
+    int bStartEpisodeFromTop = strlen(Main_strEpisode) && !strlen(Main_strMap);
+#else
+    int bStartEpisodeFromTop = 0;
+#endif
+
     if (!strlen(Main_strEpisode)) {
         strcpy(Main_strEpisode, defaultEpisode);
         bExplicitMap = 0;
     }
-    if (!strlen(Main_strMap)) {
+    if (!bStartEpisodeFromTop && !strlen(Main_strMap)) {
         strcpy(Main_strEpisode, defaultEpisode); // TODO
         strcpy(Main_strMap, defaultMap);
         bExplicitMap = 0;
@@ -136,8 +150,10 @@ int Main_StartupDedicated(int bFullyDedicated)
     if (pRemoveExt = strchr(Main_strMap, '.')) {
         *pRemoveExt = 0;
     }
-    strcat(Main_strMap, ".jkl");
-    stdPlatform_Printf("Autostarting level: `%s`\n", Main_strMap);
+    if (!bStartEpisodeFromTop) {
+        strcat(Main_strMap, ".jkl");
+    }
+    stdPlatform_Printf("Autostarting level: `%s`\n", bStartEpisodeFromTop ? Main_strEpisode : Main_strMap);
 
     if (bFullyDedicated) {
         strcpy(aTmpPlayerShortName, "ServerDed");
@@ -145,6 +161,16 @@ int Main_StartupDedicated(int bFullyDedicated)
         jkPlayer_playerShortName[31] = 0;
         jkPlayer_CreateConf(u"ServerDed");
     }
+#ifdef LIBRETRO_BUILD
+    else if (jkSession_bResumed && jkSession_resumeShortName[0]) {
+        // Resuming a saved session: restore that session's player profile
+        // (keybinds/saber/rank load from its .plr) instead of the registry's.
+        stdString_SafeStrCopy(aTmpPlayerShortName, jkSession_resumeShortName, 32);
+        stdString_CharToWchar(jkPlayer_playerShortName, aTmpPlayerShortName, 31);
+        jkPlayer_playerShortName[31] = 0;
+        jkPlayer_CreateConf(jkPlayer_playerShortName);
+    }
+#endif
     else {
         wuRegistry_GetStr("playerShortName", aTmpPlayerShortName, 32, "ServerDed");
         stdString_CharToWchar(jkPlayer_playerShortName, aTmpPlayerShortName, 31);
@@ -163,6 +189,12 @@ int Main_StartupDedicated(int bFullyDedicated)
     jkGuiNetHost_LoadSettings();
 //#endif // !defined(TARGET_NO_MULTIPLAYER_MENUS)
 
+#ifdef LIBRETRO_BUILD
+    // When resuming a saved MP session, jkSession_LoadAndApply has already
+    // populated jkGuiMultiplayer_mpcInfo -- don't stomp it with the Kyle default.
+    if (!(jkSession_bResumed && jkSession_currentMode == SESSION_MODE_MP))
+    {
+#endif
     // Fake player
     stdString_SafeWStrCopy(jkGuiMultiplayer_mpcInfo.name, u"", 32);
     stdString_SafeStrCopy(jkGuiMultiplayer_mpcInfo.model, "ky.3do", 32);
@@ -173,6 +205,9 @@ int Main_StartupDedicated(int bFullyDedicated)
     stdString_SafeStrCopy(jkGuiMultiplayer_mpcInfo.sideMat, "sabergreen1.mat", 32);
     stdString_SafeStrCopy(jkGuiMultiplayer_mpcInfo.tipMat, "sabergreen0.mat", 32);
     jkGuiMultiplayer_mpcInfo.jediRank = 0;
+#ifdef LIBRETRO_BUILD
+    }
+#endif
 
     // Set up minimal render settings
     //jkPlayer_fov = 90;
@@ -196,12 +231,14 @@ int Main_StartupDedicated(int bFullyDedicated)
 
     wuRegistry_GetWString("gameName", v34.serverName, 32, u"OpenJKDF2 Dedicated Server");
     wuRegistry_GetWString("serverPassword", v34.wPassword, 32, u"");
-#ifndef TARGET_DREAMCAST // TODO writable config
-    wuRegistry_GetStr("serverEpisodeGob", v34.episodeGobName, 32, Main_strEpisode);
-    wuRegistry_GetStr("serverMapJkl", v34.mapJklFname, 32, Main_strMap);
-#else
+#if defined(TARGET_DREAMCAST) || defined(LIBRETRO_BUILD)
+    // Libretro: the boot options fully determine episode+map; never let a
+    // stale registry entry redirect the boot.
     stdString_SafeStrCopy(v34.episodeGobName, Main_strEpisode, 32);
     stdString_SafeStrCopy(v34.mapJklFname, Main_strMap, 32);
+#else // TODO writable config
+    wuRegistry_GetStr("serverEpisodeGob", v34.episodeGobName, 32, Main_strEpisode);
+    wuRegistry_GetStr("serverMapJkl", v34.mapJklFname, 32, Main_strMap);
 #endif
 
     if (_wcslen(v34.wPassword)) {
@@ -255,7 +292,13 @@ int Main_StartupDedicated(int bFullyDedicated)
         }
     }
     else {
-        stdPlatform_Printf("Loading SP: episode `%s`, map `%s`", v34.episodeGobName, v34.mapJklFname);
+        // Libretro: with an empty map (direct boot "from the top"),
+        // jkMain_LoadLevelSingleplayer resolves the episode's first level
+        // entry itself. Starting via the episode-sequence machinery
+        // (jkMain_LoadFile) is NOT safe here: its state-driven video/level
+        // transitions assume a live menu gui state and dead-end at the title
+        // when run from a cold boot.
+        stdPlatform_Printf("Loading SP: episode `%s`, map `%s`\n", v34.episodeGobName, v34.mapJklFname);
         if (jkMain_LoadLevelSingleplayer(v34.episodeGobName, v34.mapJklFname))
         {
             return 1;
@@ -317,6 +360,12 @@ int Main_Startup(const char *cmdline)
     jkGuiSound_musicVolume = 1.0;
     stdPlatform_Printf("%s\n", Main_path);
     Main_ParseCmdLine((char *)cmdline);
+#ifdef LIBRETRO_BUILD
+    // Boot-mode core options: direct boot / resume-last-session populate the
+    // Main_b*/Main_str* autostart globals here (after the cmdline, so they
+    // win). MENU mode is a no-op and the stock title flow runs.
+    jkSession_ArmBoot();
+#endif
 #ifdef TARGET_TWL
     Main_bNoHUD = 1;
 #endif

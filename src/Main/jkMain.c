@@ -16,6 +16,9 @@
 #include "Main/jkCredits.h"
 #include "Main/jkCutscene.h"
 #include "Main/jkHudInv.h"
+#ifdef LIBRETRO_BUILD
+#include "Main/jkSession.h"
+#endif
 #include "Main/jkHud.h"
 #include "Main/jkHudScope.h"
 #include "Main/jkHudCameraView.h"
@@ -196,6 +199,12 @@ int jkMain_SwitchTo5(char *pJklFname)
 {
     signed int result; // eax
 
+#ifdef LIBRETRO_BUILD
+    // Session record: capture the live map+position BEFORE the level-name
+    // global is overwritten with the destination (the fork saved after, which
+    // could pair the new map's name with the old map's coordinates).
+    jkSession_SaveCurrent();
+#endif
     _strncpy(jkMain_aLevelJklFname, pJklFname, 0x7Fu);
     jkMain_aLevelJklFname[127] = 0;
     jkSmack_gameMode = 3;
@@ -776,6 +785,12 @@ void jkMain_GameplayLeave(int a2, int a3)
 {
     int v3; // eax
 
+#ifdef LIBRETRO_BUILD
+    // Session record: main capture point -- fires on any exit from gameplay
+    // (ESC to menu, quit, level switch) before the player/world tear down.
+    jkSession_SaveCurrent();
+#endif
+
     // MOTS added
     if (a3 == JK_GAMEMODE_MOTS_CUTSCENE) return;
 
@@ -971,11 +986,34 @@ int jkMain_LoadFile(char *a1)
     return 0;
 }
 
+#ifdef LIBRETRO_BUILD
+// Libretro: first LEVEL entry (type 0) of the just-loaded episode, for direct
+// boots that don't name a map; skips the episode's video entries.
+static char* jkMain_FirstLevelEntryName(void)
+{
+    if (!jkEpisode_mLoad.paEntries || jkEpisode_mLoad.numSeq <= 0)
+        return "";
+    for (int i = 0; i < jkEpisode_mLoad.numSeq; i++)
+    {
+        if (jkEpisode_mLoad.paEntries[i].type == 0)
+        {
+            stdPlatform_Printf("jkMain: empty map for autostart; using episode's first level entry '%s'\n",
+                               jkEpisode_mLoad.paEntries[i].fileName);
+            return jkEpisode_mLoad.paEntries[i].fileName;
+        }
+    }
+    return jkEpisode_mLoad.paEntries[0].fileName;
+}
+#endif
+
 int jkMain_loadFile2(char *pGobPath, char *pEpisodeName)
 {
     BOOL v2; // esi
     int result; // eax
 
+#ifdef LIBRETRO_BUILD
+    jkSession_SaveCurrent(); // before the level-name global is overwritten
+#endif
     _strncpy(jkMain_aLevelJklFname, pEpisodeName, 0x7Fu);
     jkMain_aLevelJklFname[127] = 0;
     jkSmack_gameMode = 2;
@@ -990,6 +1028,17 @@ int jkMain_loadFile2(char *pGobPath, char *pEpisodeName)
         jkMain_pEpisodeEnt2 = NULL;
     }
     v2 = jkEpisode_Load(&jkEpisode_mLoad);
+#ifdef LIBRETRO_BUILD
+    // Direct boot with no explicit map: use the episode's first LEVEL entry
+    // (type 0; skips video entries) instead of the engine's hard-coded
+    // JK1MP/m2.jkl default (wrong for any other GOB).
+    if (v2 && !pEpisodeName[0])
+    {
+        pEpisodeName = jkMain_FirstLevelEntryName();
+        _strncpy(jkMain_aLevelJklFname, pEpisodeName, 0x7Fu);
+        jkMain_aLevelJklFname[127] = 0;
+    }
+#endif
     jkEpisode_idk4(&jkEpisode_mLoad, pEpisodeName);
     if ( v2 )
     {
@@ -1018,6 +1067,9 @@ int jkMain_LoadLevelSingleplayer(char *pGobPath, char *pEpisodeName)
     BOOL v2; // esi
     int result; // eax
 
+#ifdef LIBRETRO_BUILD
+    jkSession_SaveCurrent(); // before the level-name global is overwritten
+#endif
     _strncpy(jkMain_aLevelJklFname, pEpisodeName, 0x7Fu);
     jkMain_aLevelJklFname[127] = 0;
     jkSmack_gameMode = 0;
@@ -1032,6 +1084,16 @@ int jkMain_LoadLevelSingleplayer(char *pGobPath, char *pEpisodeName)
         jkMain_pEpisodeEnt2 = NULL;
     }
     v2 = jkEpisode_Load(&jkEpisode_mLoad);
+#ifdef LIBRETRO_BUILD
+    // Direct boot with no explicit map: episode's first level entry (see
+    // jkMain_FirstLevelEntryName above).
+    if (v2 && !pEpisodeName[0])
+    {
+        pEpisodeName = jkMain_FirstLevelEntryName();
+        _strncpy(jkMain_aLevelJklFname, pEpisodeName, 0x7Fu);
+        jkMain_aLevelJklFname[127] = 0;
+    }
+#endif
     jkEpisode_idk4(&jkEpisode_mLoad, pEpisodeName);
     if ( v2 )
     {

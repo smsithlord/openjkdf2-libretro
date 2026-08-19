@@ -48,6 +48,7 @@
 
 #include "Win95/Window.h"      /* pulls types.h + generated globals.h (g_hWnd, g_should_exit, ...) */
 #include "Main/Main.h"
+#include "Main/jkSession.h"
 #include "World/jkPlayer.h"
 #include "Platform/stdControl.h"
 #include "stdPlatform.h"
@@ -130,6 +131,12 @@ typedef struct core_state_t
     bool cursor_autohide;    /* the option value */
     bool cursor_seen_motion;
     int cursor_idle_frames;
+
+    /* Boot/resume core options (consumed at engine boot via jkSession). */
+    int boot_mode;           /* JKSESSION_BOOT_* */
+    bool boot_multiplayer;   /* direct boot hosts an MP session instead of SP */
+    bool resume_position;    /* resume restores exact position, not just map */
+    bool skip_intro;         /* menu boot skips the pre-title intro video */
 
     int16_t silence[CORE_AUDIO_FRAMES * 2];
 } core_state_t;
@@ -533,8 +540,9 @@ static void core_poll_input(void)
  * Engine lifecycle
  * ------------------------------------------------------------------------ */
 
-/* Forward decls (defined in the cursor / fiber sections below). */
+/* Forward decls (defined in the cursor / fiber / API sections below). */
 static void core_free_cursor_gl(bool delete_objects);
+static void core_refresh_options(void);
 
 static void core_context_reset(void)
 {
@@ -752,6 +760,9 @@ static void core_engine_shutdown_and_park(const char* how)
 {
     core_log(RETRO_LOG_INFO, "engine shutdown (%s) starting\n", how);
     g_should_exit = 1;
+    /* Session record: capture where the player is before teardown (no-op /
+     * non-clobbering when there's nothing valid to record). */
+    jkSession_SaveCurrent();
     if (jkPlayer_bHasLoadedSettingsOnce)
         jkPlayer_WriteConf(jkPlayer_playerShortName);
     Main_Shutdown();
@@ -828,6 +839,13 @@ static bool core_boot_engine(void)
     g_nShowCmd = 0;
 
     core_getcwd(openjkdf2_aOrigCwd, sizeof(openjkdf2_aOrigCwd));
+
+    /* Boot-mode options (menu / direct / resume) are applied by the
+     * jkSession_ArmBoot hook inside Main_Startup, after cmdline parsing. */
+    core_refresh_options();
+    jkSession_ConfigureBoot(g_core.boot_mode, g_core.boot_multiplayer ? 1 : 0,
+                            g_core.episode_name, g_core.resume_position ? 1 : 0,
+                            g_core.skip_intro ? 1 : 0);
 
     int result = Main_Startup(g_core.cmdline);
     if (!result)
@@ -967,6 +985,38 @@ static void core_refresh_options(void)
         g_core.cursor_autohide = strcmp(var.value, "disabled") != 0;
     else
         g_core.cursor_autohide = true;
+
+    var.key = "openjkdf2_boot";
+    var.value = NULL;
+    g_core.boot_mode = JKSESSION_BOOT_MENU;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    {
+        if (!strcmp(var.value, "episode"))
+            g_core.boot_mode = JKSESSION_BOOT_DIRECT;
+        else if (!strcmp(var.value, "resume"))
+            g_core.boot_mode = JKSESSION_BOOT_RESUME;
+    }
+
+    var.key = "openjkdf2_boot_game_type";
+    var.value = NULL;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+        g_core.boot_multiplayer = strcmp(var.value, "multiplayer") == 0;
+    else
+        g_core.boot_multiplayer = false;
+
+    var.key = "openjkdf2_resume_position";
+    var.value = NULL;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+        g_core.resume_position = strcmp(var.value, "disabled") != 0;
+    else
+        g_core.resume_position = true;
+
+    var.key = "openjkdf2_skip_intro";
+    var.value = NULL;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+        g_core.skip_intro = strcmp(var.value, "enabled") == 0;
+    else
+        g_core.skip_intro = false;
 }
 
 RETRO_API void retro_set_environment(retro_environment_t cb)
@@ -980,6 +1030,42 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
     /* Core options (v2 with legacy fallback). */
     {
         static const struct retro_core_option_definition option_defs[] = {
+            {
+                "openjkdf2_boot",
+                "Boot mode (restart content to apply)",
+                "How loading content starts the game. 'Game main menu' is the stock title flow. "
+                "'Straight into episode' skips the menus and starts the loaded episode from its beginning. "
+                "'Resume last session' continues on the map you last played (falling back to the episode start, then the menu).",
+                { { "menu", "Game main menu" },
+                  { "episode", "Straight into episode" },
+                  { "resume", "Resume last session" },
+                  { NULL, NULL } },
+                "menu",
+            },
+            {
+                "openjkdf2_boot_game_type",
+                "Direct boot: game type",
+                "Whether 'Straight into episode' starts the episode as singleplayer or hosts a local multiplayer-style "
+                "session (free exploration; MP episode GOBs like JK1MP need this).",
+                { { "singleplayer", "Singleplayer" },
+                  { "multiplayer", "Multiplayer (host)" },
+                  { NULL, NULL } },
+                "singleplayer",
+            },
+            {
+                "openjkdf2_resume_position",
+                "Resume: restore exact position",
+                "When resuming a session, teleport back to where you were standing. Disabled resumes the map at its normal start point.",
+                { { "enabled", NULL }, { "disabled", NULL }, { NULL, NULL } },
+                "enabled",
+            },
+            {
+                "openjkdf2_skip_intro",
+                "Skip intro videos",
+                "Skip the pre-title intro movie when booting to the game's main menu (same effect as the in-game 'disable cutscenes' setting, without changing the player profile).",
+                { { "disabled", NULL }, { "enabled", NULL }, { NULL, NULL } },
+                "disabled",
+            },
             {
                 "openjkdf2_cursor_autohide",
                 "Auto-hide mouse pointer",
@@ -997,6 +1083,10 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
         else
         {
             static const struct retro_variable vars[] = {
+                { "openjkdf2_boot", "Boot mode; menu|episode|resume" },
+                { "openjkdf2_boot_game_type", "Direct boot game type; singleplayer|multiplayer" },
+                { "openjkdf2_resume_position", "Resume restores exact position; enabled|disabled" },
+                { "openjkdf2_skip_intro", "Skip intro videos; disabled|enabled" },
                 { "openjkdf2_cursor_autohide", "Auto-hide mouse pointer; enabled|disabled" },
                 { NULL, NULL },
             };

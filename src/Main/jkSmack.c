@@ -46,7 +46,14 @@ int jkSmack_GetCurrentGuiState()
 int jkSmack_SmackPlay(const char *fname)
 {
 #ifndef ARCH_WASM
+#ifdef LIBRETRO_BUILD
+    // Libretro: "Skip intro videos" core option -- same skip the engine's own
+    // disable-cutscenes setting takes (straight to the title menu).
+    extern int jkSession_bSkipIntroVideo;
+    if ( stdComm_EarlyInit() || jkPlayer_setDisableCutscenes || jkSession_bSkipIntroVideo )
+#else
     if ( stdComm_EarlyInit() || jkPlayer_setDisableCutscenes )
+#endif
 #endif
     {
         if ( jkGuiRend_thing_five )

@@ -554,4 +554,15 @@ void sithOpenPostProcess()
 #endif
         sithTime_Startup();
     }
+
+#ifdef LIBRETRO_BUILD
+    // Session resume: if a position was captured for this map, teleport the
+    // local player there now -- after cog CREATED messages and the MP
+    // checkpoint teleport have run, so nothing clobbers the restored pose.
+    // One-shot; the pending flag is consumed on every path.
+    {
+        extern void jkSession_ApplyPendingPosition(void);
+        jkSession_ApplyPendingPosition();
+    }
+#endif
 }
