@@ -141,27 +141,37 @@ the in-game menus lands in exactly one bucket:
 | Sound volumes, control binds | Stay in-game — per-profile settings |
 | Mods menu (`-path` restart), DF2↔MoTS switch | Neither — restart-based; hidden with no replacement (`mods/` folder + per-game ROMs cover them) |
 
-## M2 — audio consolidation (the last big architectural piece)
+## M2 — audio consolidation (DONE)
 
-Today: engine opens its own OpenAL device (SFX + cutscene audio audible, outside
-the frontend's pipeline); music/`stdMci` silent (SDL audio never initialized);
-core submits silence to keep frontend pacing.
+Was: engine opened its own OpenAL device (SFX + cutscene audio outside the
+frontend's pipeline); music inaudible; core submitted silence to keep frontend
+pacing. Now (see DESIGN.md "Audio" for the implemented shape):
 
-- [ ] OpenAL Soft **loopback device** (`ALC_SOFT_loopback` /
-      `alcRenderSamplesSOFT`): swap device creation in `stdSound` under
-      `LIBRETRO_BUILD`; render exactly 800 frames (48000/60, integer — no drift)
-      per `retro_run`, submitted as the single `audio_batch_cb`. Loopback
-      devices spawn no mixer thread: audio stays synchronous/deterministic.
-- [ ] Music: `stdMci` is the ONLY non-OpenAL audio path. Route it through an
-      OpenAL **streaming source** under `LIBRETRO_BUILD` (SDL_mixer decode-only
-      or stb_vorbis on `MUSIC/Track*.ogg` → queued AL buffers) so the loopback
-      render captures everything — one mixer, no manual sample summing.
+- [x] OpenAL Soft **loopback device** (`ALC_SOFT_loopback` /
+      `alcRenderSamplesSOFT`): device creation swapped in `stdSound` under
+      `LIBRETRO_BUILD`; exactly 800 frames (48000/60, integer — no drift)
+      rendered per `retro_run`, submitted as the single `audio_batch_cb`.
+      Loopback devices spawn no mixer thread — thread inventory with content
+      running went from 5 OpenAL device threads to zero.
+- [x] Music: routed through an OpenAL **streaming source** under
+      `LIBRETRO_BUILD` — SDL_mixer stays the decoder (device-less
+      `MIX_CreateMixer` + `MIX_Generate`, SDL audio forced to the `dummy`
+      backend so WASAPI never spawns threads), pumped once per `retro_run`
+      into queued AL buffers. All the stock `MUSIC/Track*.ogg` lookup and
+      track-advance logic is untouched. Empirical find: music was never
+      "SDL not initialized"-dead — the old build opened a real SDL WASAPI
+      device and played into it; JK1's per-level COGs (`setmusicvol`) duck
+      music to 0 outside combat, which is why it read as silent.
 - [x] ~~SMUSH cutscene audio: redirect its device output~~ — verified stale
       (devdocs): cutscene audio already plays through `stdSound` OpenAL buffers
       ([src/Main/jkCutscene.c:400](src/Main/jkCutscene.c#L400)); loopback
-      captures it for free. Just verify pause/volume behavior at M2.
-- [ ] Engine no longer opens any real audio device; verify fast-forward
-      pitches correctly, pause silences, and RetroArch recording captures audio.
+      captures it for free. Pause/volume verified at M2.
+- [x] Engine no longer opens any real audio device (loopback + dummy SDL
+      backend); RetroArch recording captures the core's audio (verified
+      non-silent via ffmpeg volumedetect); pause is hard-silent; fast-forward
+      pitches up (ear-verified). Note: GPU recording encodes on the CPU and
+      can drag the frame loop below 60fps on this machine — choppiness while
+      recording is a recording artifact, not an audio-path bug.
 
 ## M3 — options, platforms, lifecycle polish
 
@@ -231,7 +241,7 @@ core submits silence to keep frontend pacing.
 | Issue | Milestone |
 |---|---|
 | Ghost-frame artifact, top-left corner, during opening crawl | M1 |
-| Music silent; SFX bypasses frontend audio (no FF pitch, plays while paused) | M2 |
+| ~~Music silent; SFX bypasses frontend audio (no FF pitch, plays while paused)~~ — fixed at M2 (loopback consolidation); JK1 music is COG-ducked outside combat by design | done |
 | Middle/extra mouse buttons dead | M1 |
 | ~~`retro_reset` is a no-op; unload leaks the parked fiber's engine state and may leave OpenAL threads pinning the DLL~~ — fixed in the lifecycle sprint (`086c8dc8`) | done |
 | OpenAL32.dll stays mapped in the frontend after core unload (no threads, inert; next load reuses it cleanly) | cosmetic — release note only |

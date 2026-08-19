@@ -177,28 +177,40 @@ Integration points (all verified in source):
 
 ## Audio
 
-Three engine outputs today: OpenAL (SFX/3D, `stdSound.c`), SDL_mixer (music,
-`stdMci.c`), SMUSH cutscene audio (own SDL audio device).
+**Implemented (M2 consolidation).** One mix at 48000 Hz S16 stereo per frame;
+the engine opens **no real audio device** under `LIBRETRO_BUILD`:
 
-**Staged plan:**
+1. **OpenAL loopback** (`stdSound.c`): `stdSound_Startup` opens
+   `alcLoopbackOpenDeviceSOFT(NULL)` (OpenAL Soft is built in-tree, so the
+   extension is always present) with context attrs
+   `ALC_FORMAT_CHANNELS_SOFT=ALC_STEREO_SOFT`, `ALC_FORMAT_TYPE_SOFT=ALC_SHORT_SOFT`,
+   `ALC_FREQUENCY=48000`. Every `retro_run` pulls exactly 800 frames
+   (48000/60, integer — no drift) via `libretro_stdSound_RenderAudio` →
+   `alcRenderSamplesSOFT` and submits them as the single `audio_batch_cb`.
+   Loopback devices spawn no mixer threads; the engine fiber shares the
+   frontend thread, so the render is race-free by construction. A real device
+   remains as a loud-logged fallback if the extension is ever missing.
+2. **Music** (`stdMci.c`, SDL2_RENDER branch): the SDL3_mixer mixer becomes a
+   device-less `MIX_CreateMixer()` (48kHz S16 stereo), with
+   `SDL_HINT_AUDIO_DRIVER=dummy` set before `MIX_Init` so SDL's WASAPI backend
+   never initializes (its init alone spawns a device-notification thread).
+   Once per `retro_run` the core calls `libretro_stdMci_Pump()`:
+   `MIX_Generate()` pulls the decoded music mix (all the existing
+   `MUSIC/Track*.ogg` path-resolution and track-advance logic is unchanged)
+   and queues it on an OpenAL **streaming source** (8 × 800-frame buffers,
+   ~133 ms depth), which the loopback render folds into the same final mix as
+   SFX — one mixer, no manual sample summing. Engine play/stop/volume calls
+   land in SDL_mixer track state (`MIX_SetTrackGain` etc.) exactly as before.
+3. **SMUSH/cutscene audio** already plays through `stdSound` OpenAL buffers
+   ([jkCutscene.c:400](src/Main/jkCutscene.c#L400)) — captured by the loopback
+   for free.
 
-- **M0–M1 (pass-through)**: the engine opens its real OpenAL device and SDL audio
-  devices in-process, exactly like the standalone build. Sound comes out of the OS
-  mixer, not RetroArch. The core submits silence to `audio_batch_cb` (48000 Hz stereo,
-  800 frames/tick) to keep frontend pacing happy. Cheap, works day one; limitations
-  (no fast-forward pitch, keeps playing while paused) are acceptable during bring-up.
-- **M2 (consolidation, the real design)**: one mix at 48000 Hz S16 stereo per frame:
-  1. OpenAL Soft is built in-tree — open an `ALC_SOFT_loopback` device instead of a
-     real one (`alcLoopbackOpenDeviceSOFT`), render `alcRenderSamplesSOFT(dev, buf, 800)`
-     per `retro_run`. stdSound is untouched; only device creation in
-     `stdSound_Initialize` is swapped under `LIBRETRO_BUILD`.
-  2. Music: `stdMci.c`'s `Mix_OpenAudio` is replaced by decode-to-buffer. SDL_mixer 3
-     can be kept decode-only if practical; otherwise stb_vorbis on the `MUSIC/Track*.ogg`
-     files (investigate at M2 start).
-  3. SMUSH/cutscene audio: redirect `smack.c`/`jkCutscene` PCM into the same mix
-     instead of an SDL audio device.
-  4. Sum the three into one buffer, clamp, single `audio_batch_cb` per frame. Fully
-     synchronous, deterministic, fast-forward-correct.
+Consequences: RetroArch volume/recording apply to everything, pause is
+hard-silent (no `retro_run` → no samples), fast-forward pitches naturally,
+and content unload leaves zero engine audio threads (nothing to pin the DLL).
+JK1 music note: levels drive music volume dynamically via COG `setmusicvol`
+(silent while exploring, swells in combat) — music being inaudible in a quiet
+area is engine-correct.
 
 ## Input
 
@@ -307,8 +319,9 @@ writable directory.
 - **M1 — playable**: in-game stable; full keyboard/mouse; RetroPad mapped; native
   saves verified round-trip; in-core menu entries that can't work (Exit→shutdown env
   call, display mode switching) neutralized.
-- **M2 — audio consolidation**: OpenAL loopback + music + SMUSH into one
-  `audio_batch_cb`; engine no longer opens real audio devices; fast-forward behaves.
+- **M2 — audio consolidation** (done): OpenAL loopback + music into one
+  `audio_batch_cb` (SMUSH already rode stdSound); engine no longer opens real
+  audio devices; fast-forward behaves.
 - **M3 — polish**: core options wired (mods toggle, resolution, autostart episode,
   hi-res assets); MoTS `.goo` boot path verified; `retro_reset`; Linux build; frame
   time callback → `sithTime` for fast-forward correctness.
