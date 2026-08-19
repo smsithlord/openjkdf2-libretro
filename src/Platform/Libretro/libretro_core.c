@@ -87,6 +87,11 @@ extern void libretro_ForceCloseAudioDevice(void);
 #define CORE_SAMPLE_RATE  48000.0
 #define CORE_AUDIO_FRAMES 800 /* 48000 / 60 */
 
+/* Cursor wedge: don't draw until the pointer has actually been used, and
+ * auto-hide after this many frames without motion/button activity (~3s).
+ * Behind the "Auto-hide mouse pointer" core option (default on). */
+#define CURSOR_IDLE_HIDE_FRAMES 180
+
 typedef struct core_state_t
 {
     retro_environment_t environ_cb;
@@ -119,6 +124,12 @@ typedef struct core_state_t
     int mouse_abs_y;
     int last_mouse_l;
     int last_mouse_r;
+
+    /* Cursor auto-hide (core option): no wedge until the pointer is used,
+     * then hide again after CURSOR_IDLE_HIDE_FRAMES without activity. */
+    bool cursor_autohide;    /* the option value */
+    bool cursor_seen_motion;
+    int cursor_idle_frames;
 
     int16_t silence[CORE_AUDIO_FRAMES * 2];
 } core_state_t;
@@ -480,6 +491,18 @@ static void core_poll_input(void)
 
     int l = input(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT) ? 1 : 0;
     int r = input(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_RIGHT) ? 1 : 0;
+
+    /* Cursor auto-hide bookkeeping: motion or a button edge counts as pointer
+     * activity (a click mid-hover shouldn't leave the pointer invisible). */
+    if (dx || dy || l != g_core.last_mouse_l || r != g_core.last_mouse_r)
+    {
+        g_core.cursor_seen_motion = true;
+        g_core.cursor_idle_frames = 0;
+    }
+    else if (g_core.cursor_idle_frames <= CURSOR_IDLE_HIDE_FRAMES)
+    {
+        g_core.cursor_idle_frames++;
+    }
 
     uint32_t pos = ((uint32_t)Window_mouseX & 0xFFFF) | (((uint32_t)Window_mouseY << 16) & 0xFFFF0000);
 
@@ -932,6 +955,20 @@ RETRO_API unsigned retro_api_version(void)
     return RETRO_API_VERSION;
 }
 
+/* Read current core option values (call at load and whenever the frontend
+ * flags them dirty). */
+static void core_refresh_options(void)
+{
+    struct retro_variable var;
+
+    var.key = "openjkdf2_cursor_autohide";
+    var.value = NULL;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+        g_core.cursor_autohide = strcmp(var.value, "disabled") != 0;
+    else
+        g_core.cursor_autohide = true;
+}
+
 RETRO_API void retro_set_environment(retro_environment_t cb)
 {
     g_core.environ_cb = cb;
@@ -939,6 +976,33 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
         return;
 
     cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &g_core.log);
+
+    /* Core options (v2 with legacy fallback). */
+    {
+        static const struct retro_core_option_definition option_defs[] = {
+            {
+                "openjkdf2_cursor_autohide",
+                "Auto-hide mouse pointer",
+                "Show the core-drawn menu pointer only after the mouse is used, and hide it again after a few seconds of inactivity.",
+                { { "enabled", NULL }, { "disabled", NULL }, { NULL, NULL } },
+                "enabled",
+            },
+            { NULL, NULL, NULL, { { NULL, NULL } }, NULL },
+        };
+        unsigned version = 0;
+        if (cb(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &version) && version >= 1)
+        {
+            cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS, (void*)option_defs);
+        }
+        else
+        {
+            static const struct retro_variable vars[] = {
+                { "openjkdf2_cursor_autohide", "Auto-hide mouse pointer; enabled|disabled" },
+                { NULL, NULL },
+            };
+            cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
+        }
+    }
 
     /* This is a keyboard+mouse game first; the frontend's Controls menu should
      * say so instead of assuming only a RetroPad exists. Note RetroArch still
@@ -1161,6 +1225,9 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 
     g_core.mouse_abs_x = CORE_BASE_WIDTH / 2;
     g_core.mouse_abs_y = CORE_BASE_HEIGHT / 2;
+    g_core.cursor_seen_motion = false;
+    g_core.cursor_idle_frames = 0;
+    core_refresh_options();
 
     g_core.game_loaded = true;
     g_core.engine_started = false;
@@ -1222,6 +1289,13 @@ RETRO_API void retro_run(void)
         core_log(RETRO_LOG_INFO, "engine fiber created\n");
     }
 
+    /* Re-read core options when the frontend flags them changed. */
+    {
+        bool updated = false;
+        if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
+            core_refresh_options();
+    }
+
     /* Injecting input before engine startup is safe: the window-message
      * handler table is empty and stdControl's scancode map is zeroed until
      * their _Startups run. */
@@ -1242,8 +1316,12 @@ RETRO_API void retro_run(void)
     /* Run the engine until it yields: one frame, or one modal-menu iteration. */
     SwitchToFiber(s_engine_fiber);
 
-    /* Overlay the cursor wedge whenever the GUI wants a visible cursor. */
-    if (s_gl_ready && g_core.engine_started && !jkGame_isDDraw && libretro_GetCursorVisible())
+    /* Overlay the cursor wedge whenever the GUI wants a visible cursor --
+     * under the auto-hide option, only after the pointer has been used and
+     * not left idle. */
+    if (s_gl_ready && g_core.engine_started && !jkGame_isDDraw && libretro_GetCursorVisible()
+        && (!g_core.cursor_autohide
+            || (g_core.cursor_seen_motion && g_core.cursor_idle_frames < CURSOR_IDLE_HIDE_FRAMES)))
         core_draw_cursor();
 
     /* Don't leak engine GL state into the frontend's own rendering. */
@@ -1288,6 +1366,8 @@ RETRO_API void retro_reset(void)
     g_core.mouse_abs_y = CORE_BASE_HEIGHT / 2;
     g_core.last_mouse_l = 0;
     g_core.last_mouse_r = 0;
+    g_core.cursor_seen_motion = false;
+    g_core.cursor_idle_frames = 0;
     core_log(RETRO_LOG_INFO, "retro_reset: engine quiesced; fresh boot on next frame\n");
 }
 

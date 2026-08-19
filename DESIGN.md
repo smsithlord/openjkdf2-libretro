@@ -245,6 +245,7 @@ Registered via `RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2` at `retro_set_environment
 | `openjkdf2_resolution` | 640x480 … 1920x1440 | 640x480 | `Window_xSize/ySize` + `SET_GEOMETRY` (M3) |
 | `openjkdf2_autostart_episode` | disabled/enabled | disabled | derive episode from ROM filename → `-episode <name> -autostart` on the synthesized cmdline (M3) |
 | `openjkdf2_hires_assets` | enabled/disabled | enabled | investigate at M3: `Res1hi.gob` loads by wildcard; "disabled" would skip it in the resource scan |
+| `openjkdf2_cursor_autohide` | enabled/disabled | enabled | **implemented** — core-drawn menu pointer appears only after pointer activity and hides after ~3 s idle; read per-frame via `GET_VARIABLE_UPDATE` |
 
 ## Filesystem & saves
 
