@@ -69,6 +69,19 @@ ALCcontext *context;
 static ALfloat stdSound_listenerPos[3] = {0.0f, 0.0f , 0.0f};
 static ALfloat stdSound_listenerOri[6] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f };
 
+#ifdef LIBRETRO_BUILD
+// M2 audio consolidation: under the frontend the engine opens an
+// ALC_SOFT_loopback device instead of a real one. Loopback devices spawn no
+// mixer threads; the core pulls the final mix synchronously once per
+// retro_run via libretro_stdSound_RenderAudio (48kHz S16 stereo, matching
+// the core's audio_batch_cb format).
+#include "alext.h"
+static LPALCLOOPBACKOPENDEVICESOFT stdSound_alcLoopbackOpenDeviceSOFT;
+static LPALCISRENDERFORMATSUPPORTEDSOFT stdSound_alcIsRenderFormatSupportedSOFT;
+static LPALCRENDERSAMPLESSOFT stdSound_alcRenderSamplesSOFT;
+static int stdSound_bLoopback = 0;
+#endif
+
 void stdSound_DS3DToAL(ALfloat* pOut, rdVector3* pIn)
 {
     pOut[0] = pIn->x * 0.1;
@@ -102,6 +115,58 @@ int stdSound_Startup()
 
 	printf("Using OpenAL+ALUT as audio backend\n");
 
+#ifdef LIBRETRO_BUILD
+    // Try the loopback device first; a real device is only a (loud) fallback
+    // so a broken OpenAL build degrades to M1 behavior instead of silence.
+    stdSound_bLoopback = 0;
+    if (alcIsExtensionPresent(NULL, "ALC_SOFT_loopback"))
+    {
+        stdSound_alcLoopbackOpenDeviceSOFT = (LPALCLOOPBACKOPENDEVICESOFT)alcGetProcAddress(NULL, "alcLoopbackOpenDeviceSOFT");
+        stdSound_alcIsRenderFormatSupportedSOFT = (LPALCISRENDERFORMATSUPPORTEDSOFT)alcGetProcAddress(NULL, "alcIsRenderFormatSupportedSOFT");
+        stdSound_alcRenderSamplesSOFT = (LPALCRENDERSAMPLESSOFT)alcGetProcAddress(NULL, "alcRenderSamplesSOFT");
+    }
+    if (stdSound_alcLoopbackOpenDeviceSOFT && stdSound_alcRenderSamplesSOFT)
+    {
+        device = stdSound_alcLoopbackOpenDeviceSOFT(NULL);
+        if (device)
+        {
+            const ALCint attrs[] = {
+                ALC_FORMAT_CHANNELS_SOFT, ALC_STEREO_SOFT,
+                ALC_FORMAT_TYPE_SOFT, ALC_SHORT_SOFT,
+                ALC_FREQUENCY, 48000,
+                0
+            };
+            if (stdSound_alcIsRenderFormatSupportedSOFT
+                && !stdSound_alcIsRenderFormatSupportedSOFT(device, 48000, ALC_STEREO_SOFT, ALC_SHORT_SOFT))
+            {
+                stdPlatform_Printf("stdSound: loopback render format 48kHz/S16/stereo rejected?!\n");
+            }
+            alGetError();
+            context = alcCreateContext(device, attrs);
+            if (context && alcMakeContextCurrent(context))
+            {
+                stdSound_bLoopback = 1;
+                stdPlatform_Printf("stdSound: ALC_SOFT_loopback device open (48kHz S16 stereo, mixed by the libretro core)\n");
+            }
+            else
+            {
+                if (context) { alcDestroyContext(context); context = NULL; }
+                alcCloseDevice(device);
+                device = NULL;
+            }
+        }
+    }
+    if (!stdSound_bLoopback)
+    {
+        stdPlatform_Printf("stdSound: LOOPBACK UNAVAILABLE -- falling back to a real OpenAL device; audio will bypass the frontend\n");
+    }
+    else
+    {
+        // Skip the real-device path below.
+        goto loopback_done;
+    }
+#endif
+
 	enumeration = alcIsExtensionPresent(NULL, "ALC_ENUMERATION_EXT");
 	if (enumeration == AL_FALSE)
 		fprintf(stderr, "enumeration extension not available\n");
@@ -122,6 +187,10 @@ int stdSound_Startup()
 		fprintf(stderr, "failed to make default context\n");
 		return 0;
 	}
+
+#ifdef LIBRETRO_BUILD
+loopback_done:
+#endif
 
 	/* set orientation */
 	alListener3f(AL_POSITION, 0, 0, 1.0f);
@@ -153,6 +222,7 @@ void stdSound_Shutdown()
     // must never outlive the content: they would pin the core DLL in the
     // frontend process and the next load would inherit dirty globals.
     if (!context && !device) return;
+    stdSound_bLoopback = 0;
     if (context) {
         device = alcGetContextsDevice(context);
         alcMakeContextCurrent(NULL);
@@ -177,6 +247,18 @@ void stdSound_Shutdown()
 void libretro_ForceCloseAudioDevice(void)
 {
     stdSound_Shutdown();
+}
+
+// Called by the core once per retro_run: pull one 60fps tick of the engine's
+// final OpenAL mix (SFX + cutscene + the stdMci music stream) out of the
+// loopback device. Returns 0 when no loopback device is up (engine not booted
+// yet, loopback fallback, or already shut down) -- the core submits silence.
+int libretro_stdSound_RenderAudio(int16_t* pOut, int nFrames)
+{
+    if (!stdSound_bLoopback || !device || !stdSound_alcRenderSamplesSOFT)
+        return 0;
+    stdSound_alcRenderSamplesSOFT(device, pOut, nFrames);
+    return 1;
 }
 #endif
 

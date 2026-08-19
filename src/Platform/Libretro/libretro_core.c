@@ -75,6 +75,7 @@ extern int libretro_std3D_HasGlResources(void);
 /* jkGUIRend.c / stdSound.c — LIBRETRO_BUILD helpers added there. */
 extern void libretro_ForcePopActiveMenu(void);
 extern void libretro_ForceCloseAudioDevice(void);
+extern int libretro_stdSound_RenderAudio(int16_t* pOut, int nFrames);
 
 #ifndef OPENJKDF2_RELEASE_VERSION_STRING
 #define OPENJKDF2_RELEASE_VERSION_STRING "unknown"
@@ -138,7 +139,7 @@ typedef struct core_state_t
     bool resume_position;    /* resume restores exact position, not just map */
     bool skip_intro;         /* menu boot skips the pre-title intro video */
 
-    int16_t silence[CORE_AUDIO_FRAMES * 2];
+    int16_t audio_out[CORE_AUDIO_FRAMES * 2];
 } core_state_t;
 
 static core_state_t g_core;
@@ -1480,10 +1481,18 @@ RETRO_API void retro_run(void)
     if (g_core.video_cb)
         g_core.video_cb(RETRO_HW_FRAME_BUFFER_VALID, Window_xSize, Window_ySize, 0);
 
-    /* Audio: silence until the M2 consolidation (engine audio currently plays
-     * through its own OpenAL device, outside the frontend's pipeline). */
+    /* Audio (M2 consolidation): pull one tick of the engine's OpenAL loopback
+     * mix -- exactly 800 frames (48000/60, integer, no drift). The engine
+     * opens no real audio device; every audio path (SFX, cutscene, stdMci
+     * music) is mixed by OpenAL Soft into this render. Engine fiber and core
+     * share one thread, so this is race-free by construction. Silence until
+     * the engine's sound startup (or after shutdown / loopback fallback). */
     if (g_core.audio_batch_cb)
-        g_core.audio_batch_cb(g_core.silence, CORE_AUDIO_FRAMES);
+    {
+        if (!libretro_stdSound_RenderAudio(g_core.audio_out, CORE_AUDIO_FRAMES))
+            memset(g_core.audio_out, 0, sizeof(g_core.audio_out));
+        g_core.audio_batch_cb(g_core.audio_out, CORE_AUDIO_FRAMES);
+    }
 
     if (s_engine_exit_requested && g_core.environ_cb)
         g_core.environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
