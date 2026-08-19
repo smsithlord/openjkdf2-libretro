@@ -65,9 +65,9 @@ registry → synthesized `WM_CREATE`/`WM_ACTIVATE`/`WM_ACTIVATEAPP`/`WM_SHOWWIND
 | `context_reset` | mark GL usable; (re)load GL entry points; if engine was already running: rebuild GPU state (`std3D_Startup` path); first time: arm deferred engine startup |
 | first `retro_run` | deferred init with the frontend's context current: `SDL_Init(AUDIO\|JOYSTICK\|GAMEPAD)` (no VIDEO) → `OpenJKDF2_Globals_Reset()` → `glewInit()` → set `Window_xSize/ySize` → `Main_Startup(cmdline)` → registry fullscreen values ignored → synthesize `WM_CREATE`/`WM_ACTIVATE`/`WM_ACTIVATEAPP`/`WM_SHOWWINDOW` |
 | every `retro_run` | poll input → inject into engine (see Input) → set `std3D_windowFbo = get_current_framebuffer()` → `Window_Main_Loop()` → `video_cb(RETRO_HW_FRAME_BUFFER_VALID, w, h, 0)` → submit audio batch; if `g_should_exit`: `RETRO_ENVIRONMENT_SHUTDOWN` |
-| `context_destroy` | `std3D_FreeResources()` (engine already supports full GPU teardown/rebuild — used for window recreation) |
-| `retro_unload_game` | `jkPlayer_WriteConf(jkPlayer_playerShortName)` if settings loaded, `Main_Shutdown()` |
-| `retro_reset` | v1: unload+reload in place (the engine's own restart loop proves in-process re-init works via `OpenJKDF2_Globals_Reset`) |
+| `context_destroy` | `std3D_FreeResources()` + free the core's cursor GL objects (engine already supports full GPU teardown/rebuild — used for window recreation). Empirical: RetroArch sends this BEFORE `retro_unload_game` on close-content, so this is where engine GL teardown actually happens; the unload quiesce must not render |
+| `retro_unload_game` | inline engine quiesce: resume the fiber once and run `jkPlayer_WriteConf` → `Main_Shutdown` at its park point (closes the OpenAL device, joining the threads that would otherwise pin the DLL against dlclose's unmap), then `DeleteFiber`. See "Engine quiesce" below |
+| `retro_reset` | cooperative unwind quiesce (context alive): `g_should_exit` + force-pop one modal menu per frame → same WriteConf → `Main_Shutdown` at the frame boundary → `DeleteFiber` → re-arm boot (`OpenJKDF2_Globals_Reset` on the fresh fiber — upstream's own in-process restart path) |
 | `retro_serialize_size` | 0 — no save states in v1; native saves in `<basefolder>/player/` are the save mechanism |
 
 **Init is deferred to the first `retro_run`** because `Main_Startup` initializes GL
@@ -96,10 +96,37 @@ locking and the GL context stays current — swap in libco for Linux at M3):
   iteration under `LIBRETRO_BUILD` — one modal-menu iteration per frontend frame, so
   menus render, receive input, and animate at the frontend's cadence.
 - `jk_exit` (in-game Quit, called from inside modal loops) parks the engine fiber and
-  raises `RETRO_ENVIRONMENT_SHUTDOWN` instead of `exit()`.
-- Unload: the engine fiber may be parked deep inside a modal loop and cannot be unwound
-  safely — the core writes the player config and drops the fiber; clean in-place
-  restart (and thus `retro_reset`) is deferred to M3.
+  raises `RETRO_ENVIRONMENT_SHUTDOWN` instead of `exit()`; the unload that follows
+  shuts the engine down from that park point (below).
+
+### Engine quiesce (unload / reset)
+
+Getting the engine OUT of a session cleanly has two shapes (lifecycle sprint,
+`086c8dc8`), both ending in the standalone's own exit sequence — WriteConf →
+`Main_Shutdown`, which closes the OpenAL device and joins its mixer/event
+threads (empirically the only threads the core spawns, and what used to pin
+the DLL against dlclose's unmap):
+
+- **Inline** (`retro_unload_game` — the GL context is already gone on
+  RetroArch, so no frame may render): resume the fiber once; a hook at the
+  yield's resume point runs the shutdown right where the fiber was parked,
+  leaving the stack frames below frozen forever. Precedent: the engine's own
+  WM_DESTROY handler calls `Main_Shutdown` from inside the modal pump.
+- **Cooperative unwind** (`retro_reset` — context alive, frames render): set
+  `g_should_exit` (the engine's clean-exit convention; menu loops like
+  `jkGuiMain_Show` already return on it) and force-pop the innermost modal
+  menu (`jkGuiRend_activeMenu->lastClicked = -1`) once per resumed frame,
+  bounded (~120 frames), until the fiber unwinds to its frame-boundary loop;
+  the modal pump's own `g_should_exit → jk_exit` call is suppressed during
+  the quiesce (LIBRETRO_BUILD gate in `jkGuiRend_DisplayAndReturnClicked`).
+  If the budget expires the inline shape runs instead.
+
+Fallback (engine failed during boot): WriteConf + force-close the OpenAL
+device from the frontend fiber (`libretro_ForceCloseAudioDevice`). GL
+teardown (`std3D_FreeResources`) runs in `context_destroy` or in the quiesce,
+whichever the frontend sends first, guarded by
+`libretro_std3D_HasGlResources()`. `retro_deinit` runs `ConvertFiberToThread`
+so the frontend's main thread doesn't remain a fiber after the core unloads.
 - Frontend-side GL calls in `retro_run` are gated on a `s_gl_ready` flag set after
   `glewInit` (which runs on the engine fiber): GLEW's function pointers are NULL before
   that, and calling one is a jump to address zero.
