@@ -142,6 +142,7 @@ typedef struct core_state_t
      * and a quiet moment, or the retry budget runs out. */
     void*    pending_state;
     unsigned pending_state_len;
+    unsigned pending_state_kind; /* CORE_STATE_KIND_* */
     int      pending_state_frames;
 
     int16_t audio_out[CORE_AUDIO_FRAMES * 2];
@@ -1244,12 +1245,20 @@ static void core_show_message(const char* text)
  * zero padding compresses to nothing in the frontend's state files. */
 #define CORE_STATE_CAP   (8u * 1024u * 1024u)
 #define CORE_STATE_MAGIC "JKSTATE1"
+
+/* What the payload after the header is. Singleplayer states are the engine's
+ * own savegame; multiplayer has no savegame system at all, so MP states
+ * carry what MP resume carries -- level, pose and character. */
+#define CORE_STATE_KIND_SAVEGAME 0u /* also what pre-MP states have (zeroed) */
+#define CORE_STATE_KIND_MP_POSE  1u
+
 typedef struct core_state_envelope_t
 {
     char     magic[8];    /* CORE_STATE_MAGIC, no terminator */
-    uint32_t payload_len; /* engine .jks bytes that follow this header */
+    uint32_t payload_len; /* payload bytes that follow this header */
     uint32_t flags;       /* bit 0: MoTS content */
-    uint32_t reserved[4];
+    uint32_t payload_kind;/* CORE_STATE_KIND_* */
+    uint32_t reserved[3];
 } core_state_envelope_t;
 
 /* Deferred-restore retry budget: a cold boot needs a few seconds to reach a
@@ -1264,6 +1273,14 @@ static bool core_savestate_context_ok(void)
     if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT, &ctx))
         return ctx == RETRO_SAVESTATE_CONTEXT_NORMAL || ctx == RETRO_SAVESTATE_CONTEXT_UNKNOWN;
     return true;
+}
+
+/* Route a payload to the restore path its kind belongs to. */
+static int core_state_restore(const void* payload, unsigned len, unsigned kind)
+{
+    return (kind == CORE_STATE_KIND_MP_POSE)
+        ? jkSession_MpStateRestore(payload, len)
+        : jkSession_StateRestore(payload, len);
 }
 
 static void core_drop_pending_state(const char* why)
@@ -1502,7 +1519,8 @@ RETRO_API void retro_run(void)
      * between frames -- the same quiesce point the menus operate from. */
     if (g_core.pending_state && g_core.engine_started)
     {
-        int rc = jkSession_StateRestore(g_core.pending_state, g_core.pending_state_len);
+        int rc = core_state_restore(g_core.pending_state, g_core.pending_state_len,
+                                    g_core.pending_state_kind);
         if (rc == JKSESSION_STATE_OK)
             core_drop_pending_state("restore queued");
         else if (rc == JKSESSION_STATE_BAD)
@@ -1606,25 +1624,49 @@ RETRO_API bool retro_serialize(void* data, size_t size)
     memcpy(env->magic, CORE_STATE_MAGIC, sizeof(env->magic));
     env->flags = g_core.is_mots ? 1u : 0u;
 
-    unsigned payload_len = 0;
-    if (g_core.engine_started && !g_core.engine_start_failed && !g_core.pending_state
-        && jkSession_StateCapture((uint8_t*)data + sizeof(*env),
-                                  (unsigned)(size - sizeof(*env)), &payload_len))
+    if (g_core.engine_started && !g_core.engine_start_failed && !g_core.pending_state)
     {
-        env->payload_len = payload_len;
-        core_log(RETRO_LOG_INFO, "savestate captured (%u byte savegame)\n", payload_len);
-        return true;
+        uint8_t* payload = (uint8_t*)data + sizeof(*env);
+        unsigned cap = (unsigned)(size - sizeof(*env));
+        unsigned payload_len = 0;
+
+        /* Singleplayer: the engine's savegame. Multiplayer: the engine
+         * refuses to save at all, so fall through to the pose state. */
+        if (jkSession_StateCapture(payload, cap, &payload_len))
+        {
+            env->payload_len = payload_len;
+            env->payload_kind = CORE_STATE_KIND_SAVEGAME;
+            core_log(RETRO_LOG_INFO, "savestate captured (%u byte savegame)\n", payload_len);
+            return true;
+        }
+        if (jkSession_MpStateCapture(payload, cap, &payload_len))
+        {
+            env->payload_len = payload_len;
+            env->payload_kind = CORE_STATE_KIND_MP_POSE;
+            core_log(RETRO_LOG_INFO, "savestate captured (%u byte multiplayer pose state)\n", payload_len);
+            return true;
+        }
     }
 
-    /* Nothing capturable (menus with no world, MP, engine not booted, a
-     * restore still in flight): succeed with an EMPTY state instead of
-     * failing. The frontend's load-state flow first snapshots the current
-     * state for undo and ABORTS the whole load if that snapshot fails --
-     * failing here would make loading a state impossible from exactly the
-     * places a user most wants it (the title menu, before the engine is up).
-     * Loading an empty state back is an explicit no-op. */
-    core_log(RETRO_LOG_INFO, "savestate: nothing to capture here - wrote an empty state\n");
-    return true;
+    /* Nothing to capture (engine not up, a menu with no world, a dead
+     * player, or a save/load already in flight): FAIL. The failure surfaces
+     * at save time and no slot is written, so a player can never end up
+     * holding a state that won't load (frontend-team request, 2026-08-20).
+     *
+     * This costs nothing on the load side: a frontend that snapshots the
+     * current state for undo-load before unserializing treats that
+     * snapshot's failure as non-fatal and still calls unserialize (verified
+     * in RetroArch 1.21 -- "Failed to save state to RAM" followed by a
+     * completed load), and RetroArch's auto-load-state doesn't serialize at
+     * all. What used to break loads from the title screen was unserialize
+     * returning false when the engine wasn't ready yet; that now parks the
+     * state and self-arms (see below). */
+    core_log(RETRO_LOG_WARN, "savestate: nothing to capture here - refusing (engine_started=%d)\n",
+             g_core.engine_started ? 1 : 0);
+    core_show_message(g_core.engine_started
+                      ? "OpenJKDF2: can't save a state here - load a level first (menus and dead players can't be saved)"
+                      : "OpenJKDF2: the game is still starting up - try again once you're in a level");
+    return false;
 }
 
 RETRO_API bool retro_unserialize(const void* data, size_t size)
@@ -1637,7 +1679,15 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
         core_log(RETRO_LOG_ERROR, "unserialize: not an OpenJKDF2 state\n");
         return false;
     }
-    if (env->payload_len == 0 || env->payload_len > size - sizeof(*env))
+    if (env->payload_len == 0)
+    {
+        /* Only a state written by a build that emitted "empty" states when
+         * it had nothing to capture; serialize now fails in that case
+         * instead, so these exist only on disk from older builds. */
+        core_show_message("OpenJKDF2: that savestate is empty (saved outside a singleplayer level) - nothing to restore");
+        return false;
+    }
+    if (env->payload_len > size - sizeof(*env))
     {
         core_log(RETRO_LOG_ERROR, "unserialize: bad payload length %u\n", env->payload_len);
         return false;
@@ -1647,29 +1697,23 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
         core_show_message("OpenJKDF2: that state belongs to the other game (DF2 vs MoTS)");
         return false;
     }
-    if (env->payload_len == 0)
-    {
-        /* An empty state (saved with no capturable game -- see serialize). */
-        core_show_message("OpenJKDF2: that savestate is empty (it was saved outside a singleplayer level) - nothing restored");
-        return true;
-    }
     const uint8_t* payload = (const uint8_t*)data + sizeof(*env);
 
     if (g_core.engine_started)
     {
-        int rc = jkSession_StateRestore(payload, env->payload_len);
+        int rc = core_state_restore(payload, env->payload_len, env->payload_kind);
         if (rc == JKSESSION_STATE_OK)
             return true; /* queued: the engine loads it over the next frames */
         if (rc == JKSESSION_STATE_BAD)
         {
-            core_show_message("OpenJKDF2: that state's savegame is unreadable");
+            core_show_message("OpenJKDF2: that state's contents are unreadable");
             return false;
         }
         /* JKSESSION_STATE_RETRY: engine live but not ready (no player
-         * profile picked yet, save/load mid-flight, or multiplayer).
-         * Fall through and park it -- the retro_run retry loop arms it the
-         * moment the engine becomes ready (e.g. right after the user's
-         * profile loads). */
+         * profile picked yet, save/load mid-flight, or -- for an MP pose
+         * state -- the state's map isn't the loaded one). Fall through and
+         * park it; the retro_run retry loop arms it the moment the engine
+         * becomes ready. */
     }
 
     /* Park a copy; retro_run retries until the engine is ready (covers both
@@ -1682,6 +1726,7 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
     core_drop_pending_state("superseded by a newer unserialize");
     g_core.pending_state = copy;
     g_core.pending_state_len = env->payload_len;
+    g_core.pending_state_kind = env->payload_kind;
     g_core.pending_state_frames = CORE_STATE_PENDING_RETRY_FRAMES;
     if (g_core.engine_started)
         core_show_message("OpenJKDF2: state load queued - it applies as soon as the game is ready");

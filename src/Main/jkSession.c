@@ -705,6 +705,168 @@ int jkSession_ResolveMpCharacter(void)
 #define JKSESSION_STATE_TMP_FNAME     "_JKSTATE_TMP.jks"
 #define JKSESSION_STATE_PENDING_FNAME "_JKSTATE_PENDING.jks"
 
+// --- Multiplayer states -----------------------------------------------------
+// MP has no engine savegame system: sithGamesave_Save refuses outright while
+// the multiplayer submode bit is set (g_submodeFlags & 1, set by
+// sithMulti_Startup), and stock JK gates the quicksave key on the same bit.
+// So an MP state carries exactly what MP *resume* carries -- level, pose and
+// character -- rather than a world snapshot. Same restore path too: the
+// pending-teleport globals plus jkSession_ApplyPendingPosition.
+#define JKSESSION_MPSTATE_MAGIC   0x504D534AU /* 'JSMP' */
+#define JKSESSION_MPSTATE_VERSION 1
+
+typedef struct jkSessionMpState
+{
+    uint32_t magic;
+    uint32_t version;
+    char     episodeGob[32];
+    char     mapJkl[128];
+    int32_t  sectorIdx;
+    float    pos[3];
+    float    rvec[3];
+    float    lvec[3];
+    float    uvec[3];
+    float    eyePYR[3];
+    char16_t charName[32];
+    char     charModel[32];
+    char     charSound[32];
+    char     charSideMat[32];
+    char     charTipMat[32];
+    int32_t  charJediRank;
+} jkSessionMpState;
+
+int jkSession_MpStateCapture(void* pOut, unsigned int outCap, unsigned int* pOutLen)
+{
+    if (!pOut || !pOutLen)
+        return 0;
+    *pOutLen = 0;
+
+    SithThing* pLocal = sithPlayer_g_pLocalPlayerThing;
+    SithWorld* pWorld = sithWorld_g_pCurrentWorld;
+    if (outCap < sizeof(jkSessionMpState) || !sithNet_isMulti
+        || !pLocal || !pWorld || !pWorld->aSectors
+        || (pLocal->flags & SITH_TF_DEAD) != 0)
+    {
+        stdPlatform_Printf("jkSession: MP state capture refused (multi=%d world=%d player=%d cap=%u)\n",
+                           sithNet_isMulti, pWorld != NULL, pLocal != NULL, outCap);
+        return 0;
+    }
+    // A player in the void keeps a stale sector pointer; don't persist a
+    // position no sector actually contains (same rule as the pose record).
+    if (!sithSector_FindSectorAtPos(pWorld, &pLocal->position))
+    {
+        stdPlatform_Printf("jkSession: MP state capture refused (position is in the void)\n");
+        return 0;
+    }
+
+    jkSessionMpState* pSt = (jkSessionMpState*)pOut;
+    memset(pSt, 0, sizeof(*pSt));
+    pSt->magic   = JKSESSION_MPSTATE_MAGIC;
+    pSt->version = JKSESSION_MPSTATE_VERSION;
+    stdString_SafeStrCopy(pSt->episodeGob, jkRes_episodeGobName, sizeof(pSt->episodeGob));
+    stdString_SafeStrCopy(pSt->mapJkl, pWorld->map_jkl_fname, sizeof(pSt->mapJkl));
+    pSt->sectorIdx = (int32_t)(pLocal->sector - pWorld->aSectors);
+    pSt->pos[0]  = (float)pLocal->position.x;
+    pSt->pos[1]  = (float)pLocal->position.y;
+    pSt->pos[2]  = (float)pLocal->position.z;
+    pSt->rvec[0] = (float)pLocal->orient.rvec.x;
+    pSt->rvec[1] = (float)pLocal->orient.rvec.y;
+    pSt->rvec[2] = (float)pLocal->orient.rvec.z;
+    pSt->lvec[0] = (float)pLocal->orient.lvec.x;
+    pSt->lvec[1] = (float)pLocal->orient.lvec.y;
+    pSt->lvec[2] = (float)pLocal->orient.lvec.z;
+    pSt->uvec[0] = (float)pLocal->orient.uvec.x;
+    pSt->uvec[1] = (float)pLocal->orient.uvec.y;
+    pSt->uvec[2] = (float)pLocal->orient.uvec.z;
+    pSt->eyePYR[0] = (float)pLocal->actorParams.headPYR.x;
+    pSt->eyePYR[1] = (float)pLocal->actorParams.headPYR.y;
+    pSt->eyePYR[2] = (float)pLocal->actorParams.headPYR.z;
+
+    stdString_SafeWStrCopy(pSt->charName, jkGuiMultiplayer_mpcInfo.name, 32);
+    stdString_SafeStrCopy (pSt->charModel,   jkGuiMultiplayer_mpcInfo.model,      32);
+    stdString_SafeStrCopy (pSt->charSound,   jkGuiMultiplayer_mpcInfo.soundClass, 32);
+    stdString_SafeStrCopy (pSt->charSideMat, jkGuiMultiplayer_mpcInfo.sideMat,    32);
+    stdString_SafeStrCopy (pSt->charTipMat,  jkGuiMultiplayer_mpcInfo.tipMat,     32);
+    pSt->charJediRank = jkGuiMultiplayer_mpcInfo.jediRank;
+
+    *pOutLen = (unsigned int)sizeof(*pSt);
+    stdPlatform_Printf("jkSession: MP state captured (map '%s', %u bytes)\n",
+                       pSt->mapJkl, *pOutLen);
+    return 1;
+}
+
+int jkSession_MpStateRestore(const void* pData, unsigned int len)
+{
+    jkSessionMpState st;
+    if (!pData || len < sizeof(st))
+        return JKSESSION_STATE_BAD;
+    _memcpy(&st, pData, sizeof(st));
+    if (st.magic != JKSESSION_MPSTATE_MAGIC || st.version != JKSESSION_MPSTATE_VERSION)
+    {
+        stdPlatform_Printf("jkSession: MP state rejected (magic %08x version %u)\n",
+                           st.magic, st.version);
+        return JKSESSION_STATE_BAD;
+    }
+    st.mapJkl[sizeof(st.mapJkl) - 1] = 0;
+    st.episodeGob[sizeof(st.episodeGob) - 1] = 0;
+
+    // Character: restore unconditionally. It is what a boot-time restore
+    // needs (the session's own character, exactly like MP resume), and in a
+    // live session it is already yours, so writing it back is a no-op.
+    stdString_SafeWStrCopy(jkGuiMultiplayer_mpcInfo.name, st.charName, 32);
+    stdString_SafeStrCopy (jkGuiMultiplayer_mpcInfo.model,      st.charModel,   32);
+    stdString_SafeStrCopy (jkGuiMultiplayer_mpcInfo.soundClass, st.charSound,   32);
+    stdString_SafeStrCopy (jkGuiMultiplayer_mpcInfo.sideMat,    st.charSideMat, 32);
+    stdString_SafeStrCopy (jkGuiMultiplayer_mpcInfo.tipMat,     st.charTipMat,  32);
+    jkGuiMultiplayer_mpcInfo.jediRank = st.charJediRank;
+
+    // Arm the pose through the resume machinery -- one canonical teleport.
+    jkSession_pendingSectorIdx = st.sectorIdx;
+    jkSession_pendingPos.x = st.pos[0];
+    jkSession_pendingPos.y = st.pos[1];
+    jkSession_pendingPos.z = st.pos[2];
+    jkSession_pendingLookOrient.rvec.x = st.rvec[0];
+    jkSession_pendingLookOrient.rvec.y = st.rvec[1];
+    jkSession_pendingLookOrient.rvec.z = st.rvec[2];
+    jkSession_pendingLookOrient.lvec.x = st.lvec[0];
+    jkSession_pendingLookOrient.lvec.y = st.lvec[1];
+    jkSession_pendingLookOrient.lvec.z = st.lvec[2];
+    jkSession_pendingLookOrient.uvec.x = st.uvec[0];
+    jkSession_pendingLookOrient.uvec.y = st.uvec[1];
+    jkSession_pendingLookOrient.uvec.z = st.uvec[2];
+    jkSession_pendingLookOrient.scale.x = 0.0;
+    jkSession_pendingLookOrient.scale.y = 0.0;
+    jkSession_pendingLookOrient.scale.z = 0.0;
+    jkSession_pendingEyePYR.x = st.eyePYR[0];
+    jkSession_pendingEyePYR.y = st.eyePYR[1];
+    jkSession_pendingEyePYR.z = st.eyePYR[2];
+    stdString_SafeStrCopy(jkSession_pendingMapJkl, st.mapJkl, sizeof(jkSession_pendingMapJkl));
+    jkSession_bPendingPosition = 1;
+
+    SithWorld* pWorld = sithWorld_g_pCurrentWorld;
+    if (!sithNet_isMulti || !pWorld || !sithPlayer_g_pLocalPlayerThing)
+    {
+        // Engine still coming up, or not in a multiplayer session yet. The
+        // pose stays armed: whoever loads a level next applies it (the
+        // resume path), and the core keeps retrying meanwhile.
+        stdPlatform_Printf("jkSession: MP state armed, waiting for a live session (map '%s')\n", st.mapJkl);
+        return JKSESSION_STATE_RETRY;
+    }
+    if (__strcmpi(st.mapJkl, pWorld->map_jkl_fname))
+    {
+        // Different map: MP has no mid-session level switch, so leave the
+        // pose armed for a load of that map rather than teleporting into
+        // the wrong world.
+        stdPlatform_Printf("jkSession: MP state is for map '%s' but '%s' is loaded - pose left armed\n",
+                           st.mapJkl, pWorld->map_jkl_fname);
+        return JKSESSION_STATE_RETRY;
+    }
+
+    jkSession_ApplyPendingPosition();
+    stdPlatform_Printf("jkSession: MP state restored (map '%s')\n", st.mapJkl);
+    return JKSESSION_STATE_OK;
+}
+
 int jkSession_StateCapture(void* pOut, unsigned int outCap, unsigned int* pOutLen)
 {
     if (!pOut || !pOutLen)

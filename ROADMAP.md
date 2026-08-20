@@ -138,10 +138,17 @@ the following frames. All verified in RetroArch via UDP commands:
       pending pose teleport cleared. Not-ready loads (pre-boot auto-load,
       title screen without a profile) park in the core and self-arm from
       `retro_run` when the engine is ready (60 s budget, OSD give-up).
-- [x] Serialize never hard-fails for "nothing to capture" — it writes an
-      empty state: RetroArch's load flow aborts the entire load if its
-      pre-load undo snapshot fails, so a failing serialize at the title menu
-      would make load-state unusable exactly where it's wanted.
+- [x] Serialize FAILS when there is nothing to capture, so no unloadable slot
+      is ever written (frontend-team request 2026-08-20). Supersedes the
+      earlier "empty state" hack, which rested on a wrong inference — a
+      frontend's failed pre-load undo snapshot does NOT abort the load
+      (RetroArch logs it and calls unserialize anyway), and auto-load-state
+      never serializes at all. Verified both ways.
+- [x] Multiplayer states: the engine has no MP savegame (`sithGamesave_Save`
+      refuses while the MP submode bit is set), so MP states carry level +
+      pose + character — the same payload MP resume uses — restored through
+      the same `jkSession_ApplyPendingPosition` teleport. Envelope gained a
+      `payload_kind` field (old states read back as kind 0).
 - [x] Quirks declared (`INCOMPLETE | PLATFORM | ENDIAN`) + savestate-context
       check: rewind/run-ahead/netplay never route through this path.
 - [x] Packaging: new core info file

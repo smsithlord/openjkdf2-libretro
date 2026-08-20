@@ -144,6 +144,17 @@ int jkSession_StateCapture(void* pOut, unsigned int outCap, unsigned int* pOutLe
 #define JKSESSION_STATE_BAD  (-1) /* not a usable save payload -- drop it */
 int jkSession_StateRestore(const void* pData, unsigned int len);
 
+// Multiplayer states. MP has no engine savegame system at all (the engine
+// refuses sithGamesave_Save while the multiplayer submode bit is set, and
+// stock JK gates the quicksave key on it), so an MP state carries what MP
+// RESUME carries -- level, pose and character -- and restores through the
+// same pending-teleport path. Capture needs a live MP session with the
+// player somewhere real; restore applies immediately when the state's map is
+// the loaded one, otherwise leaves the pose armed (JKSESSION_STATE_RETRY) so
+// a load of that map picks it up, exactly like a resume boot.
+int jkSession_MpStateCapture(void* pOut, unsigned int outCap, unsigned int* pOutLen);
+int jkSession_MpStateRestore(const void* pData, unsigned int len);
+
 #ifdef __cplusplus
 }
 #endif
