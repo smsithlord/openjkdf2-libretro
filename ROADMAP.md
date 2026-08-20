@@ -69,14 +69,54 @@ Shipped in `25860a97` + `543fe5a2`, all verified in RetroArch:
       never-into-the-void validation, and a ROM-mismatch guard falls back to
       direct boot. Intro-skip, cursor auto-hide, and position-restore are folded
       into the modes / fixed behaviors, not separate options.
-- [x] Session resume is map+pose only by design — world state (kills, pickups)
-      stays the job of native saves; the two compose (resume in, then Load Game).
+- [x] ~~Session resume is map+pose only by design~~ — superseded by the
+      full-state resume sprint below (devdocs/08); pose-only remains the MP
+      behavior and the SP fallback tier.
 - [x] devdocs/07 cherry-picks (`b44e6c98`): cog no-change-rebuild fix (~90 s →
       1.8 s), SDL_mixer Debug/Release CRT-clobber fix (paths adapted to 3.2.4),
       Release PDBs + `/GL`+`/LTCG`, `std3D_DoTex` GL-state dedup, and
       `stdPlatform_Printf` → `retro_log` mirror with duplicate suppression +
       `OPENJKDF2_LOG` file mirror. `/arch:AVX2` deferred until near release
       (old-hardware audience — devdocs/07 §6).
+
+## Full-state SP resume (devdocs/08) — DONE
+
+`openjkdf2_boot = resume` in singleplayer restores full world state (kills,
+pickups, inventory, health) through the engine's own savegame system,
+automatically — no new core option (`level` mode is the "fresh level" choice).
+All verified in RetroArch:
+
+- [x] Per-episode session save `player/<name>/_JKSESSION_<episodeStem>.jks`
+      (stem sanitized — it comes from the GOB filename), co-written by
+      `jkSession_SaveCurrent` at every point that captures a valid SP pose
+      (gameplay exit, level switches, engine quiesce): quicksave-shaped
+      `sithGamesave_Save` + immediate `Process` (write points are past the
+      last `sithUpdate` tick). Guards: `bPlayerValid` (boot-time no-op calls
+      never write), SP only, engine save/load not already in flight.
+- [x] Resume boot loads the save through the engine's own no-world savegame
+      flow (`jkMain_sub_4034D0` → `JK_GAMEMODE_UNK` → gameMode 1 →
+      `sithGamesave_Restore`) — the Load Game menu's cold path, exactly as
+      doc-08's gui-state warning demanded (verified from cold boot; the
+      direct `jkPlayer_LoadSave` shortcut was not needed). The save's own
+      position is used; the pending pose teleport is cleared.
+- [x] Fallback chain verified: missing/unreadable session save → pose resume
+      (fresh level + teleport); stale save (map differs from the pose
+      record's — the record is ground truth for where the user last played)
+      → pose resume; no record → episode start → title.
+- [x] `level` mode ignores the session save (default spawn, no restore); MP
+      resume keeps the pose path (MP has no saves; both `SaveCurrent`'s .jks
+      write and the boot load are SP-gated).
+- [x] Empirical extras: death after a resume reloads the session save (the
+      engine's stock "restore last saved position" semantics — the loaded
+      save is the last save); seeded round-trip carried inventory across
+      relaunch (ammo 72 vs fresh-start 50) from a record with no position.
+- [x] Bug found & fixed in round-trip testing: the no-world load flow parks
+      the save FILENAME in `jkMain_aLevelJklFname` and never restored the
+      real map, so post-restore session records said
+      `map_jkl = _JKSESSION_*.jks` and poisoned the next resume.
+      `SaveCurrent` now records the live world's map name, and
+      `sithGamesave_RestoreFile` (LIBRETRO_BUILD) writes the real map back
+      after a successful restore.
 
 ## M1 — playable v1 (finish line for "it's a real core")
 
