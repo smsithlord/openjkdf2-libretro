@@ -261,7 +261,17 @@ Registered via `RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2` at `retro_set_environment
 | `openjkdf2_boot_game_type` | all/singleplayer/multiplayer | all | **implemented** — direct-boot episode-type FILTER only: the game mode always follows the episode's own `episode.jk` TYPE (`jkSession_ResolveAutoBootMode` probes it at `Main_StartupDedicated`; SP episodes boot SP, any MP type solo-hosts a local session — works against `Networking/None`); episodes outside the selection boot to the game menu |
 
 Default is `episode` — loading content means "play this game"; the stock
-intro/menu click-through is opt-in (owner decision, 2026-08-20).
+intro/menu click-through is opt-in (owner decision, 2026-08-20). In the same
+spirit, the engine's "Disable episode confirmation" option (`menu_bFastMissionText`,
+the mission-text OK gate on the level loading screen) defaults ON under
+LIBRETRO_BUILD — it's a per-profile cvar, so existing profiles keep their
+saved choice.
+
+Quick-start MP character (fixed behavior, 2026-08-20): a resumed MP session
+keeps the record's restored `jkGuiMultiplayer_mpcInfo`; a direct-boot MP
+host resolves the record's last-used character (any episode), else the
+profile's first `.mpc` (`jkSession_ResolveMpCharacter`), else the stock
+Kyle default.
 
 Quick-start profile resolution (fixed behavior, 2026-08-20): a direct boot
 loads (1) the session record's profile when resuming, else (2) the

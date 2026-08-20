@@ -111,6 +111,15 @@ int jkSession_StartBootSave(void);
 // title flow forces character creation).
 int jkSession_FindAnyProfile(char* pOut, int outSize);
 
+// Quick-start MP character resolution (rule-style, like the profile chain):
+// returns 1 when jkGuiMultiplayer_mpcInfo is already correct (a resumed MP
+// session restored the record's block) or was filled here -- from the last
+// session record's mp_char_* keys (any episode), else the profile's first
+// .mpc on disk. Returns 0 when the caller should apply the stock Kyle
+// default (SP boots, or an MP host with no character anywhere). Called from
+// Main_StartupDedicated in place of the unconditional default.
+int jkSession_ResolveMpCharacter(void);
+
 // Frontend savestate bridge (devdocs/09): a libretro "savestate" here is the
 // engine's own savegame captured to / restored from hidden scratch files in
 // the profile dir ('~'-less display names keep them out of the Load Game

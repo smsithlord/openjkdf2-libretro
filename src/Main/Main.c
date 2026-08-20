@@ -231,9 +231,12 @@ int Main_StartupDedicated(int bFullyDedicated)
 //#endif // !defined(TARGET_NO_MULTIPLAYER_MENUS)
 
 #ifdef LIBRETRO_BUILD
-    // When resuming a saved MP session, jkSession_LoadAndApply has already
-    // populated jkGuiMultiplayer_mpcInfo -- don't stomp it with the Kyle default.
-    if (!(jkSession_bResumed && jkSession_currentMode == SESSION_MODE_MP))
+    // MP character resolution for quick starts (rule-style, like the profile
+    // chain): a resumed MP session keeps the record's restored block; a
+    // direct-boot MP host gets the record's last-used character, else the
+    // profile's first .mpc; only when none of those exist does the stock
+    // Kyle default below apply.
+    if (!jkSession_ResolveMpCharacter())
     {
 #endif
     // Fake player

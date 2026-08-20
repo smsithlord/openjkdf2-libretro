@@ -38,7 +38,11 @@
 #include "Main/sithCvar.h"
 
 // DSi has *plenty* of time to read the text.
-#ifdef TARGET_RETRO_HOMEBREW
+// Libretro: default the mission-text OK gate OFF ("Disable episode
+// confirmation" in Setup -> General) so loading content goes straight
+// in-game (owner request 2026-08-20). Per-profile cvar -- existing profiles
+// keep whatever they saved; this is the default for new ones.
+#if defined(TARGET_RETRO_HOMEBREW) || defined(LIBRETRO_BUILD)
 #define FAST_MISSION_TEXT_DEFAULT (1)
 #else
 #define FAST_MISSION_TEXT_DEFAULT (0)

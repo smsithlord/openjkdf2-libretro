@@ -622,6 +622,83 @@ int jkSession_FindAnyProfile(char* pOut, int outSize)
     return bFound;
 }
 
+int jkSession_ResolveMpCharacter(void)
+{
+    // A resumed MP session already restored the record's character block
+    // (jkSession_LoadAndApply); tell the caller not to stomp it.
+    if (jkSession_bResumed && jkSession_currentMode == SESSION_MODE_MP)
+        return 1;
+
+    // Only a direct boot that will host an MP session needs a character.
+    if (!jkSession_pendingMpHosting)
+        return 0;
+
+    // (1) The last session record's character -- "the character you last
+    // played as" -- regardless of which episode the record is for (an
+    // episode direct boot deliberately ignores the rest of the record).
+    {
+        char model[32];
+        stdJSON_GetString(JKSESSION_FNAME, "mp_char_model", model, sizeof(model), "");
+        if (model[0])
+        {
+            memset(&jkGuiMultiplayer_mpcInfo, 0, sizeof(jkGuiMultiplayer_mpcInfo));
+            stdJSON_GetWString(JKSESSION_FNAME, "mp_char_name",
+                               jkGuiMultiplayer_mpcInfo.name, 32, u"");
+            stdJSON_GetString (JKSESSION_FNAME, "mp_char_model",
+                               jkGuiMultiplayer_mpcInfo.model, 32, "ky.3do");
+            stdJSON_GetString (JKSESSION_FNAME, "mp_char_sound",
+                               jkGuiMultiplayer_mpcInfo.soundClass, 32, "ky.snd");
+            stdJSON_GetString (JKSESSION_FNAME, "mp_saber_side_mat",
+                               jkGuiMultiplayer_mpcInfo.sideMat, 32, "sabergreen1.mat");
+            stdJSON_GetString (JKSESSION_FNAME, "mp_saber_tip_mat",
+                               jkGuiMultiplayer_mpcInfo.tipMat, 32, "sabergreen0.mat");
+            jkGuiMultiplayer_mpcInfo.jediRank =
+                stdJSON_GetInt(JKSESSION_FNAME, "mp_char_jedi_rank", 0);
+            stdPlatform_Printf("jkSession: MP character from the last session record (model '%s')\n",
+                               jkGuiMultiplayer_mpcInfo.model);
+            return 1;
+        }
+    }
+
+    // (2) The profile's first .mpc on disk (the Multiplayer Characters
+    // menu's enumeration). hasBins=0: character identity only -- no
+    // force-bin side effects this early in boot.
+    {
+        char aProfile[32];
+        char aDirPath[64];
+        char aMpcName[32];
+        char16_t wMpcName[32];
+        stdFileSearchResult searchRes;
+        int bFound = 0;
+
+        stdString_WcharToChar(aProfile, jkPlayer_playerShortName, 31);
+        aProfile[31] = 0;
+        if (!aProfile[0])
+            return 0;
+        stdString_snprintf(aDirPath, sizeof(aDirPath), "player%c%s",
+                           LEC_PATH_SEPARATOR_CHR, aProfile);
+        stdFileSearch* pSearch = stdFileUtil_NewFind(aDirPath, 3, "mpc");
+        if (!pSearch)
+            return 0;
+        while (!bFound && stdFileUtil_FindNext(pSearch, &searchRes))
+        {
+            _strncpy(aMpcName, searchRes.fpath, 31);
+            aMpcName[31] = 0;
+            stdFnames_StripExtAndDot(aMpcName);
+            stdString_CharToWchar(wMpcName, aMpcName, 31);
+            wMpcName[31] = 0;
+            if (jkPlayer_MPCParse(&jkGuiMultiplayer_mpcInfo, NULL,
+                                  jkPlayer_playerShortName, wMpcName, 0))
+            {
+                stdPlatform_Printf("jkSession: MP character from profile character '%s'\n", aMpcName);
+                bFound = 1;
+            }
+        }
+        stdFileUtil_DisposeFind(pSearch);
+        return bFound;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Frontend savestate bridge (retro_serialize / retro_unserialize; devdocs/09).
 

@@ -172,6 +172,16 @@ the following frames. All verified in RetroArch via UDP commands:
       unattended title visit used to wipe the registry's last-used profile
       and silently degrade every save feature on later boots. (Verified:
       registry self-repairs to the loaded profile on quit.)
+- [x] "Disable episode confirmation" (the `menu_bFastMissionText` cvar — the
+      mission-text OK gate on the level loading screen, Setup → General)
+      defaults ON for LIBRETRO_BUILD: new profiles go straight in-game after
+      a level load. Per-profile cvar; existing profiles keep their saved
+      choice.
+- [x] Quick-start MP character resolution (`jkSession_ResolveMpCharacter`):
+      resumed MP sessions keep the record's restored character; direct-boot
+      MP hosts get the record's last-used character, else the profile's
+      first .mpc (verified: JK1MP direct boot hosts as the profile's
+      character), else the stock Kyle default.
 
 ## M1 — playable v1 (finish line for "it's a real core")
 
