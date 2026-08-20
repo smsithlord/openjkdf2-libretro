@@ -111,6 +111,11 @@ int jkSession_StartBootSave(void);
 // title flow forces character creation).
 int jkSession_FindAnyProfile(char* pOut, int outSize);
 
+// "modA.gob|modB.gob" for the mods/ files the resource scan loaded (empty
+// when none). Recorded into session records and savestates as content
+// provenance; nothing consumes it yet. Points at a static buffer.
+const char* jkSession_ModsManifest(void);
+
 // Quick-start MP character resolution (rule-style, like the profile chain):
 // returns 1 when jkGuiMultiplayer_mpcInfo is already correct (a resumed MP
 // session restored the record's block) or was filled here -- from the last

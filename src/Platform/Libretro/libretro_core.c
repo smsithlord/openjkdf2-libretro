@@ -49,6 +49,7 @@
 #include "Win95/Window.h"      /* pulls types.h + generated globals.h (g_hWnd, g_should_exit, ...) */
 #include "Main/Main.h"
 #include "Main/jkSession.h"
+#include "Main/jkRes.h"
 #include "World/jkPlayer.h"
 #include "Platform/stdControl.h"
 #include "stdPlatform.h"
@@ -1087,6 +1088,14 @@ static void core_refresh_options(void)
         }
     }
 
+    /* mods/ escape hatch. Consumed by the resource scan at engine boot, so
+     * a change only takes effect on the next content load. */
+    var.key = "openjkdf2_use_mods";
+    var.value = NULL;
+    jkRes_bAllowModsDir = 1;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+        jkRes_bAllowModsDir = strcmp(var.value, "disabled") != 0;
+
     /* Direct-boot episode-type filter; the game mode itself always follows
      * the episode's own TYPE (jkSession_ResolveAutoBootMode). */
     var.key = "openjkdf2_boot_game_type";
@@ -1185,6 +1194,17 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                 "640x480",
             },
             {
+                "openjkdf2_use_mods",
+                "Load mods folder (restart content to apply)",
+                "Files in the game folder's mods/ directory override the stock resource files. This is on by "
+                "default and is how mods are meant to be installed; turn it off to play unmodded without moving "
+                "files out of the folder.",
+                { { "enabled", "Enabled" },
+                  { "disabled", "Disabled (ignore mods/)" },
+                  { NULL, NULL } },
+                "enabled",
+            },
+            {
                 "openjkdf2_boot_game_type",
                 "Direct boot: episode types",
                 "The game mode (singleplayer, or hosting a local multiplayer session) always follows the loaded episode's "
@@ -1209,6 +1229,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                 { "openjkdf2_boot", "Boot mode; episode|intro|menu|level|resume" },
                 { "openjkdf2_boot_game_type", "Direct boot episode types; all|singleplayer|multiplayer" },
                 { "openjkdf2_resolution", "Internal resolution; 640x480|800x600|1024x768|1280x960|1920x1440|1280x720|1600x900|1920x1080|1280x800|1680x1050|1920x1200" },
+                { "openjkdf2_use_mods", "Load mods folder; enabled|disabled" },
                 { NULL, NULL },
             };
             cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
@@ -1332,7 +1353,11 @@ static void core_show_message(const char* text)
  * session. Engine saves scale with level size but stay well under 1 MB; the
  * zero padding compresses to nothing in the frontend's state files. */
 #define CORE_STATE_CAP   (8u * 1024u * 1024u)
-#define CORE_STATE_MAGIC "JKSTATE1"
+/* Bumped when the envelope layout changes (the payload's offset moves with
+ * it, so an older state can't just be read leniently -- it is rejected with
+ * an explanation instead). v1 = no game/mods provenance fields. */
+#define CORE_STATE_MAGIC    "JKSTATE2"
+#define CORE_STATE_MAGIC_V1 "JKSTATE1"
 
 /* What the payload after the header is. Singleplayer states are the engine's
  * own savegame; multiplayer has no savegame system at all, so MP states
@@ -1340,12 +1365,20 @@ static void core_show_message(const char* text)
 #define CORE_STATE_KIND_SAVEGAME 0u /* also what pre-MP states have (zeroed) */
 #define CORE_STATE_KIND_MP_POSE  1u
 
+/* Content provenance recorded with every state: which game it came from
+ * (also enforced via the flags bit) and which mods/ files were loaded.
+ * Nothing consumes the mod list yet -- it is here so a future version can
+ * warn about, or restore, the content set a state was made with. */
+#define CORE_STATE_MODS_MAX 1024
+
 typedef struct core_state_envelope_t
 {
     char     magic[8];    /* CORE_STATE_MAGIC, no terminator */
     uint32_t payload_len; /* payload bytes that follow this header */
     uint32_t flags;       /* bit 0: MoTS content */
     uint32_t payload_kind;/* CORE_STATE_KIND_* */
+    char     game[8];     /* "jk1" / "mots", NUL-padded (human-readable twin of flags bit 0) */
+    char     mods[CORE_STATE_MODS_MAX]; /* "a.gob|b.gob", NUL-padded; empty when none */
     uint32_t reserved[3];
 } core_state_envelope_t;
 
@@ -1716,6 +1749,9 @@ RETRO_API bool retro_serialize(void* data, size_t size)
     core_state_envelope_t* env = (core_state_envelope_t*)data;
     memcpy(env->magic, CORE_STATE_MAGIC, sizeof(env->magic));
     env->flags = g_core.is_mots ? 1u : 0u;
+    /* Provenance: the game, and the mod files this session actually loaded. */
+    strncpy(env->game, g_core.is_mots ? "mots" : "jk1", sizeof(env->game) - 1);
+    strncpy(env->mods, jkSession_ModsManifest(), sizeof(env->mods) - 1);
 
     if (g_core.engine_started && !g_core.engine_start_failed && !g_core.pending_state)
     {
@@ -1769,7 +1805,15 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
     const core_state_envelope_t* env = (const core_state_envelope_t*)data;
     if (memcmp(env->magic, CORE_STATE_MAGIC, sizeof(env->magic)) != 0)
     {
-        core_log(RETRO_LOG_ERROR, "unserialize: not an OpenJKDF2 state\n");
+        if (memcmp(env->magic, CORE_STATE_MAGIC_V1, sizeof(env->magic)) == 0)
+        {
+            core_log(RETRO_LOG_ERROR, "unserialize: state uses the older v1 envelope\n");
+            core_show_message("OpenJKDF2: that savestate was made by an older build of this core and can't be loaded");
+        }
+        else
+        {
+            core_log(RETRO_LOG_ERROR, "unserialize: not an OpenJKDF2 state\n");
+        }
         return false;
     }
     if (env->payload_len == 0)
@@ -1787,8 +1831,23 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
     }
     if ((env->flags & 1u) != (g_core.is_mots ? 1u : 0u))
     {
+        core_log(RETRO_LOG_ERROR, "unserialize: state is from '%.8s', this is '%s'\n",
+                 env->game, g_core.is_mots ? "mots" : "jk1");
         core_show_message("OpenJKDF2: that state belongs to the other game (DF2 vs MoTS)");
         return false;
+    }
+    /* Content provenance: report a different mod set but don't act on it --
+     * the state still loads. Restoring the recorded set is a future option. */
+    {
+        char state_mods[CORE_STATE_MODS_MAX];
+        memcpy(state_mods, env->mods, sizeof(state_mods));
+        state_mods[sizeof(state_mods) - 1] = 0;
+        if (strcmp(state_mods, jkSession_ModsManifest()) != 0)
+        {
+            core_log(RETRO_LOG_WARN, "unserialize: state was made with mods [%s], now loaded [%s]\n",
+                     state_mods[0] ? state_mods : "(none)",
+                     jkSession_ModsManifest()[0] ? jkSession_ModsManifest() : "(none)");
+        }
     }
     const uint8_t* payload = (const uint8_t*)data + sizeof(*env);
 

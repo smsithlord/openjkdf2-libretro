@@ -17,6 +17,14 @@
 
 static int jkRes_bInit;
 
+#ifdef LIBRETRO_BUILD
+// Added: mods/ escape hatch + manifest (see jkRes.h). Default matches
+// upstream behavior: mods override resource/ unless explicitly disabled.
+int  jkRes_bAllowModsDir = 1;
+char jkRes_aModNames[JKRES_MAX_MOD_NAMES][64];
+int  jkRes_numModNames = 0;
+#endif
+
 int jkRes_Startup(HostServices *a1)
 {
     stdPlatform_Printf("OpenJKDF2: %s\n", __func__);
@@ -266,8 +274,16 @@ int jkRes_LoadNew(jkResGobDirectory *resGob, char *name, int a3)
     jkRes_UnhookHS();
 
     // Added: Add a mods dir which always overrides resource/
+#ifdef LIBRETRO_BUILD
+    // Added: ...unless the core's escape-hatch option turned it off.
+    if (!_strcmp(name, "resource") && jkRes_bAllowModsDir)
+#else
     if (!_strcmp(name, "resource"))
+#endif
     {
+#ifdef LIBRETRO_BUILD
+        jkRes_numModNames = 0;
+#endif
         v15 = stdFileUtil_NewFind("mods", 3, JKRES_GOB_EXT);
         while (stdFileUtil_FindNext(v15, &v18))
         {
@@ -279,11 +295,33 @@ int jkRes_LoadNew(jkResGobDirectory *resGob, char *name, int a3)
                 resGob->gobs[resGob->numGobs] = stdGob_Load(jkRes_idkGobPath, 16, 0);
 
                 if ( resGob->gobs[resGob->numGobs] )
+                {
                     resGob->numGobs++;
+#ifdef LIBRETRO_BUILD
+                    // Added: remember what actually loaded, in load order.
+                    if (jkRes_numModNames < JKRES_MAX_MOD_NAMES)
+                    {
+                        stdString_SafeStrCopy(jkRes_aModNames[jkRes_numModNames],
+                                              v18.fpath, sizeof(jkRes_aModNames[0]));
+                        jkRes_numModNames++;
+                    }
+#endif
+                }
             }
         }
         stdFileUtil_DisposeFind(v15);
+#ifdef LIBRETRO_BUILD
+        if (jkRes_numModNames)
+            stdPlatform_Printf("jkRes: %d mod file(s) loaded from mods/\n", jkRes_numModNames);
+#endif
     }
+#ifdef LIBRETRO_BUILD
+    else if (!_strcmp(name, "resource") && !jkRes_bAllowModsDir)
+    {
+        jkRes_numModNames = 0;
+        stdPlatform_Printf("jkRes: mods/ overrides disabled by core option\n");
+    }
+#endif
 
     v15 = stdFileUtil_NewFind(name, 3, JKRES_GOB_EXT);
     while (stdFileUtil_FindNext(v15, &v18))

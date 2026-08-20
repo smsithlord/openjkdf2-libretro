@@ -43,6 +43,21 @@ int jkRes_ReadKeyRaw(); // Added
 int jkRes_ReadKeyRawEarly(); // Added
 int jkRes_ReadKey();
 int jkRes_LoadNew(jkResGobDirectory *resGob, char *name, int a3);
+
+#ifdef LIBRETRO_BUILD
+// Added: the mods/ override scan is normally unconditional. The core exposes
+// it as an escape hatch (openjkdf2_use_mods, default enabled) so a mod that
+// breaks the game can be switched off without moving files. Set before
+// Main_Startup; 0 skips the scan entirely.
+extern int jkRes_bAllowModsDir;
+
+// Added: manifest of the mod GOB/GOO files actually loaded by the last
+// resource scan, in load order. Recorded into session records and savestates
+// so a save knows what content it was made with (nothing consumes it yet).
+#define JKRES_MAX_MOD_NAMES 32
+extern char jkRes_aModNames[JKRES_MAX_MOD_NAMES][64];
+extern int  jkRes_numModNames;
+#endif
 int jkRes_NewGob(jkResGobDirectory *gobFullpath, char *gobFolder, char *gobFname);
 int jkRes_LoadCD(int a1);
 

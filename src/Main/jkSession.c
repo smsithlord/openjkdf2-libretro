@@ -101,6 +101,21 @@ static void jkSession_SessionSaveFname(char* pOut, int outSize, const char* pEpi
     stdString_snprintf(pOut, outSize, "_JKSESSION_%s.jks", j ? stem : "EPISODE");
 }
 
+const char* jkSession_ModsManifest(void)
+{
+    // "a.gob|b.gob", load order preserved; empty string when none loaded.
+    static char manifest[JKRES_MAX_MOD_NAMES * 64];
+    manifest[0] = 0;
+    for (int i = 0; i < jkRes_numModNames; i++)
+    {
+        if (i)
+            stdString_SafeStrCopy(manifest + strlen(manifest), "|", 2);
+        stdString_SafeStrCopy(manifest + strlen(manifest), jkRes_aModNames[i],
+                              (int)(sizeof(manifest) - strlen(manifest)));
+    }
+    return manifest;
+}
+
 // Case-insensitive compare of episode GOB names ignoring any extension
 // ("JK1" == "jk1.gob").
 static int jkSession_EpisodeStemEquals(const char* a, const char* b)
@@ -197,6 +212,14 @@ void jkSession_SaveCurrent(void)
 
     stdJSON_SaveInt  (fpath, "version",           JKSESSION_VERSION);
     stdJSON_SetString(fpath, "mode",              jkSession_ModeStr(mode));
+    // Which game this record belongs to. A basefolder normally holds one or
+    // the other, but nothing stops both sitting in one episode/ dir -- and
+    // a JK record must never resume a MoTS boot (or vice versa).
+    stdJSON_SetString(fpath, "game",              Main_bMotsCompat ? "mots" : "jk1");
+    // Content provenance: which mods/ files were loaded. Nothing consumes
+    // this yet -- it exists so a future version can warn about (or restore)
+    // the mod set a save was made with.
+    stdJSON_SetString(fpath, "mods",              jkSession_ModsManifest());
     stdJSON_SetString(fpath, "episode_gob",       jkRes_episodeGobName);
     stdJSON_SetString(fpath, "map_jkl",           (char*)pMapJkl);
     stdJSON_SetString(fpath, "player_short_name", shortName);
@@ -286,6 +309,21 @@ int jkSession_LoadAndApply(const char* pExpectedEpisode)
     jkSessionMode mode = jkSession_ModeFromStr(modeStr);
     if (mode == SESSION_MODE_NONE)
         return 0;
+
+    // Game match. Records written before this field existed have no "game";
+    // treat those as the current game (they can only have come from a
+    // basefolder that booted it).
+    {
+        char game[16] = {0};
+        const char* pThisGame = Main_bMotsCompat ? "mots" : "jk1";
+        stdJSON_GetString(fpath, "game", game, sizeof(game), "");
+        if (game[0] && __strcmpi(game, pThisGame))
+        {
+            stdPlatform_Printf("jkSession: last session is a %s session, this is %s - not resuming\n",
+                               game, pThisGame);
+            return 0;
+        }
+    }
 
     char episode[128] = {0};
     char mapJkl [128] = {0};

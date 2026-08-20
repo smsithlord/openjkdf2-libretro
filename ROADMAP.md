@@ -301,20 +301,31 @@ pacing. Now (see DESIGN.md "Audio" for the implemented shape):
 - [x] ~~`openjkdf2_autostart_episode`~~ — DROPPED: fully superseded by
       `openjkdf2_boot`, which already autostarts the ROM's episode in
       `episode`/`level`/`resume` and offers `intro`/`menu` as the opt-outs.
-- [ ] `openjkdf2_use_mods` — **needs a decision, see note below.** Would gate
-      the `mods/` scan at [src/Main/jkRes.c:268](src/Main/jkRes.c#L268).
-      Upstream behavior is always-on (any `mods/*.gob` overrides `resource/`),
-      so the brief's "default off" would silently ignore a user's mods folder.
-      Recommend: either drop it, or ship it defaulting ON purely as a
-      "disable my mods" escape hatch.
-- [ ] `openjkdf2_hires_assets` — **needs a decision, see note below.** Would
-      skip `Res1hi.gob`. But `Res1hi.gob` is in `InstallHelper`'s
-      `aRequiredAssets` and is the only art GOB in a modern install (the
-      test basefolder has just `Res1hi.gob` + `Res2.gob`; the low-res twin
-      `Res1low.gob` shipped only in the CD's MININSTALL). Skipping it on a
-      modern install means missing art, not "low-res mode". Recommend: drop
-      unless someone actually installs from CD media.
-- [ ] **MoTS**: verify `.goo` boot end-to-end (`Main_bMotsCompat`, `JKM.goo`).
+- [x] **`openjkdf2_use_mods`** — DONE, as a default-ON escape hatch (owner
+      decision): mods/ overriding resource/ stays the normal behavior (and
+      matches upstream), the option only lets a user play unmodded without
+      moving files. Gates the scan via `jkRes_bAllowModsDir`
+      ([src/Main/jkRes.c](src/Main/jkRes.c)); pre-boot decision, so it needs
+      a content restart.
+- [x] ~~`openjkdf2_hires_assets`~~ — DROPPED (owner decision): `Res1low.gob`
+      is the one that always shipped and `Res1hi.gob` was the optional
+      high-res install, but OpenJKDF2 already exposes the choice in its own
+      in-game options, and the resource scan loads whatever is present by
+      wildcard. A core option would just duplicate an in-game setting.
+- [x] **MoTS**: `.goo` boot verified end-to-end (2026-08-20) — `JKM.GOO`
+      loads, `Main_bMotsCompat` is set from the extension, the resource layer
+      switches to `goo`, and the game is playable (test basefolder
+      `testdata/mots`, assembled from the Steam install). A fresh MoTS
+      basefolder has no profile, so the direct boot correctly cancels into
+      character creation first. Savestate/resume matrix against MoTS still
+      to run.
+- [x] **Save provenance**: session records and savestates now record which
+      game they belong to (`game` = `jk1`/`mots`; savestates also keep the
+      flags bit) and the mods/ manifest that was loaded. Resume refuses a
+      record from the other game; savestate loads refuse the other game and
+      log (without blocking) a changed mod set. Note: the engine's own
+      `sithGamesave_Header` records neither — it has only version, episode,
+      map, health, bins and the display name.
 - [x] ~~retro_reset + clean unload~~ — promoted to the lifecycle sprint above.
 - [ ] Frame-time callback (`SET_FRAME_TIME_CALLBACK`) → `sithTime`, so
       fast-forward/slow-motion scale game time instead of wall clock.
