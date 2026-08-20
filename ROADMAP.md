@@ -317,8 +317,9 @@ pacing. Now (see DESIGN.md "Audio" for the implemented shape):
       switches to `goo`, and the game is playable (test basefolder
       `testdata/mots`, assembled from the Steam install). A fresh MoTS
       basefolder has no profile, so the direct boot correctly cancels into
-      character creation first. Savestate/resume matrix against MoTS still
-      to run.
+      character creation first. Full matrix verified: MoTS full-state resume
+      loads `_JKSESSION_JKM.jks` (the MoTS save version 0x7D6 passes the
+      header check), and savestate save/load round-trips (~523 KB payloads).
 - [x] **Save provenance**: session records and savestates now record which
       game they belong to (`game` = `jk1`/`mots`; savestates also keep the
       flags bit) and the mods/ manifest that was loaded. Resume refuses a
