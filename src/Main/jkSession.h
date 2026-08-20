@@ -103,6 +103,30 @@ int jkSession_ResolveAutoBootMode(void);
 // the pose-resume level load.
 int jkSession_StartBootSave(void);
 
+// Frontend savestate bridge (devdocs/09): a libretro "savestate" here is the
+// engine's own savegame captured to / restored from hidden scratch files in
+// the profile dir ('~'-less display names keep them out of the Load Game
+// list). Capture mirrors the Save Game menu's synchronous Save+Process pair;
+// restore is a SIGNAL -- it queues the Load Game menu's exact load flow and
+// completes over the following frames.
+
+// Capture the current game as raw .jks bytes into pOut. Works whenever the
+// native Save Game menu would: a loaded SP world with a local player, from
+// gameplay or from inside the ESC menu. Returns 1 and sets *pOutLen; returns
+// 0 when there is nothing to capture, a save/load is already in flight, or
+// the save doesn't fit outCap.
+int jkSession_StateCapture(void* pOut, unsigned int outCap, unsigned int* pOutLen);
+
+// Queue a restore of bytes previously produced by StateCapture. Validates
+// the leading engine save header, parks the bytes as a pending save in the
+// profile, arms the menu's load route (jkPlayer_LoadSave for a live same-map
+// world, the no-world jkMain_sub_4034D0 route otherwise), and suppresses any
+// pending pose teleport (the save's own position wins).
+#define JKSESSION_STATE_OK     1  /* queued; the engine loads it over the next frames */
+#define JKSESSION_STATE_RETRY  0  /* engine not ready (no profile / transition in flight) */
+#define JKSESSION_STATE_BAD  (-1) /* not a usable save payload -- drop it */
+int jkSession_StateRestore(const void* pData, unsigned int len);
+
 #ifdef __cplusplus
 }
 #endif

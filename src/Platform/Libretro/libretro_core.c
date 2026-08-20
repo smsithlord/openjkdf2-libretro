@@ -136,6 +136,14 @@ typedef struct core_state_t
     int boot_mode;           /* JKSESSION_BOOT_* (INTRO plays the stock movie; every other mode skips it) */
     int direct_boot_filter;  /* JKSESSION_DIRECT_* — which episode types direct-boot */
 
+    /* Deferred savestate restore: retro_unserialize before the engine is up
+     * (the frontend's auto-load-state fires right after content load) parks a
+     * copy here; retro_run retries it until the booted engine has a profile
+     * and a quiet moment, or the retry budget runs out. */
+    void*    pending_state;
+    unsigned pending_state_len;
+    int      pending_state_frames;
+
     int16_t audio_out[CORE_AUDIO_FRAMES * 2];
 } core_state_t;
 
@@ -1218,6 +1226,54 @@ static void core_show_message(const char* text)
     }
 }
 
+/* --------------------------------------------------------------------------
+ * Savestates (devdocs/09). Not a memory snapshot -- the engine has none --
+ * but the engine's own savegame (~350 KB) carried in a fixed-size envelope.
+ * Save works whenever the native Save Game menu would (loaded SP world, live
+ * player, also from inside the ESC menu). Load is a restore SIGNAL: it
+ * queues the engine's own Load Game flow and completes over the following
+ * frames -- fine for the user-facing state slots, useless for frame-exact
+ * features (rewind/run-ahead/netplay), which the serialization quirks and
+ * the savestate-context check keep away from this path. */
+
+/* Fixed size cap: libretro forbids serialize_size ever growing during a
+ * session. Engine saves scale with level size but stay well under 1 MB; the
+ * zero padding compresses to nothing in the frontend's state files. */
+#define CORE_STATE_CAP   (8u * 1024u * 1024u)
+#define CORE_STATE_MAGIC "JKSTATE1"
+typedef struct core_state_envelope_t
+{
+    char     magic[8];    /* CORE_STATE_MAGIC, no terminator */
+    uint32_t payload_len; /* engine .jks bytes that follow this header */
+    uint32_t flags;       /* bit 0: MoTS content */
+    uint32_t reserved[4];
+} core_state_envelope_t;
+
+/* Deferred-restore retry budget: a cold boot needs a few seconds to reach a
+ * profile; a fresh install that never creates one gives up after this. */
+#define CORE_STATE_PENDING_RETRY_FRAMES (60 * 60)
+
+/* Only serve genuine to-disk savestates. Frontends that don't support the
+ * context query get the benefit of the doubt. */
+static bool core_savestate_context_ok(void)
+{
+    int ctx = RETRO_SAVESTATE_CONTEXT_NORMAL;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT, &ctx))
+        return ctx == RETRO_SAVESTATE_CONTEXT_NORMAL || ctx == RETRO_SAVESTATE_CONTEXT_UNKNOWN;
+    return true;
+}
+
+static void core_drop_pending_state(const char* why)
+{
+    if (!g_core.pending_state)
+        return;
+    core_log(RETRO_LOG_INFO, "dropping deferred state restore (%s)\n", why);
+    free(g_core.pending_state);
+    g_core.pending_state = NULL;
+    g_core.pending_state_len = 0;
+    g_core.pending_state_frames = 0;
+}
+
 static bool core_path_is_dir(const char* path)
 {
 #ifdef _WIN32
@@ -1336,6 +1392,16 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
     struct retro_keyboard_callback kb = { core_keyboard_event };
     g_core.environ_cb(RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK, &kb);
 
+    /* Savestates are engine savegames restored asynchronously over following
+     * frames: usable for the save/load slots, incomplete for frame-exact
+     * features. Declare that so netplay/run-ahead don't build on them. */
+    {
+        uint64_t quirks = RETRO_SERIALIZATION_QUIRK_INCOMPLETE
+                        | RETRO_SERIALIZATION_QUIRK_PLATFORM_DEPENDENT
+                        | RETRO_SERIALIZATION_QUIRK_ENDIAN_DEPENDENT;
+        g_core.environ_cb(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks);
+    }
+
     g_core.mouse_abs_x = CORE_BASE_WIDTH / 2;
     g_core.mouse_abs_y = CORE_BASE_HEIGHT / 2;
     g_core.cursor_seen_motion = false;
@@ -1366,6 +1432,7 @@ RETRO_API void retro_unload_game(void)
     /* Inline quiesce only: on RetroArch the GL context is already gone here
      * (context_destroy freed the GL side), so no frame may render -- the
      * engine shuts down at its current park point instead of unwinding. */
+    core_drop_pending_state("content unloading");
     core_quiesce_engine(false);
     g_core.game_loaded = false;
 }
@@ -1426,6 +1493,27 @@ RETRO_API void retro_run(void)
         std3D_RebindVAO();
     }
 
+    /* A deferred savestate restore (auto-load-state fired before the engine
+     * booted) arms itself as soon as the engine has a profile and no
+     * save/load/level transition in flight. The engine fiber is parked here
+     * between frames -- the same quiesce point the menus operate from. */
+    if (g_core.pending_state && g_core.engine_started)
+    {
+        int rc = jkSession_StateRestore(g_core.pending_state, g_core.pending_state_len);
+        if (rc == JKSESSION_STATE_OK)
+            core_drop_pending_state("restore queued");
+        else if (rc == JKSESSION_STATE_BAD)
+        {
+            core_show_message("OpenJKDF2: the auto-loaded savestate is unreadable");
+            core_drop_pending_state("bad payload");
+        }
+        else if (--g_core.pending_state_frames <= 0)
+        {
+            core_show_message("OpenJKDF2: gave up loading the savestate (no player profile became ready)");
+            core_drop_pending_state("retry budget exhausted");
+        }
+    }
+
     /* Run the engine until it yields: one frame, or one modal-menu iteration. */
     SwitchToFiber(s_engine_fiber);
 
@@ -1484,6 +1572,7 @@ RETRO_API void retro_reset(void)
     /* Re-arm boot: retro_run recreates the fiber lazily and core_boot_engine
      * re-runs OpenJKDF2_Globals_Reset -- the same in-process restart the
      * standalone's own restart loop uses (main.c). */
+    core_drop_pending_state("retro_reset");
     memset(g_keyboard_state, 0, sizeof(g_keyboard_state));
     g_core.mouse_abs_x = CORE_BASE_WIDTH / 2;
     g_core.mouse_abs_y = CORE_BASE_HEIGHT / 2;
@@ -1494,11 +1583,109 @@ RETRO_API void retro_reset(void)
     core_log(RETRO_LOG_INFO, "retro_reset: engine quiesced; fresh boot on next frame\n");
 }
 
-/* No save states: the engine has no snapshot mechanism. Native saves live in
- * <basefolder>/player/. */
-RETRO_API size_t retro_serialize_size(void) { return 0; }
-RETRO_API bool retro_serialize(void* data, size_t size) { (void)data; (void)size; return false; }
-RETRO_API bool retro_unserialize(const void* data, size_t size) { (void)data; (void)size; return false; }
+/* Savestates: see the envelope/context block above core_derive_basefolder
+ * and the jkSession_StateCapture/StateRestore bridge (src/Main/jkSession.c). */
+RETRO_API size_t retro_serialize_size(void)
+{
+    return CORE_STATE_CAP;
+}
+
+RETRO_API bool retro_serialize(void* data, size_t size)
+{
+    if (!data || size < sizeof(core_state_envelope_t))
+        return false;
+    if (!core_savestate_context_ok())
+        return false; /* rewind/run-ahead/netplay snapshot: not supported */
+
+    /* Deterministic padding: zero everything, then let the capture fill in. */
+    memset(data, 0, size);
+    core_state_envelope_t* env = (core_state_envelope_t*)data;
+    memcpy(env->magic, CORE_STATE_MAGIC, sizeof(env->magic));
+    env->flags = g_core.is_mots ? 1u : 0u;
+
+    unsigned payload_len = 0;
+    if (g_core.engine_started && !g_core.engine_start_failed && !g_core.pending_state
+        && jkSession_StateCapture((uint8_t*)data + sizeof(*env),
+                                  (unsigned)(size - sizeof(*env)), &payload_len))
+    {
+        env->payload_len = payload_len;
+        core_log(RETRO_LOG_INFO, "savestate captured (%u byte savegame)\n", payload_len);
+        return true;
+    }
+
+    /* Nothing capturable (menus with no world, MP, engine not booted, a
+     * restore still in flight): succeed with an EMPTY state instead of
+     * failing. The frontend's load-state flow first snapshots the current
+     * state for undo and ABORTS the whole load if that snapshot fails --
+     * failing here would make loading a state impossible from exactly the
+     * places a user most wants it (the title menu, before the engine is up).
+     * Loading an empty state back is an explicit no-op. */
+    core_log(RETRO_LOG_INFO, "savestate: nothing to capture here - wrote an empty state\n");
+    return true;
+}
+
+RETRO_API bool retro_unserialize(const void* data, size_t size)
+{
+    if (!data || size < sizeof(core_state_envelope_t))
+        return false;
+    const core_state_envelope_t* env = (const core_state_envelope_t*)data;
+    if (memcmp(env->magic, CORE_STATE_MAGIC, sizeof(env->magic)) != 0)
+    {
+        core_log(RETRO_LOG_ERROR, "unserialize: not an OpenJKDF2 state\n");
+        return false;
+    }
+    if (env->payload_len == 0 || env->payload_len > size - sizeof(*env))
+    {
+        core_log(RETRO_LOG_ERROR, "unserialize: bad payload length %u\n", env->payload_len);
+        return false;
+    }
+    if ((env->flags & 1u) != (g_core.is_mots ? 1u : 0u))
+    {
+        core_show_message("OpenJKDF2: that state belongs to the other game (DF2 vs MoTS)");
+        return false;
+    }
+    if (env->payload_len == 0)
+    {
+        /* An empty state (saved with no capturable game -- see serialize). */
+        core_show_message("OpenJKDF2: that savestate is empty (it was saved outside a singleplayer level) - nothing restored");
+        return true;
+    }
+    const uint8_t* payload = (const uint8_t*)data + sizeof(*env);
+
+    if (g_core.engine_started)
+    {
+        int rc = jkSession_StateRestore(payload, env->payload_len);
+        if (rc == JKSESSION_STATE_OK)
+            return true; /* queued: the engine loads it over the next frames */
+        if (rc == JKSESSION_STATE_BAD)
+        {
+            core_show_message("OpenJKDF2: that state's savegame is unreadable");
+            return false;
+        }
+        /* JKSESSION_STATE_RETRY: engine live but not ready (no player
+         * profile picked yet, save/load mid-flight, or multiplayer).
+         * Fall through and park it -- the retro_run retry loop arms it the
+         * moment the engine becomes ready (e.g. right after the user's
+         * profile loads). */
+    }
+
+    /* Park a copy; retro_run retries until the engine is ready (covers both
+     * the frontend's auto-load-state before the engine boots, and a live
+     * load from a not-ready state like the title screen). */
+    void* copy = malloc(env->payload_len);
+    if (!copy)
+        return false;
+    memcpy(copy, payload, env->payload_len);
+    core_drop_pending_state("superseded by a newer unserialize");
+    g_core.pending_state = copy;
+    g_core.pending_state_len = env->payload_len;
+    g_core.pending_state_frames = CORE_STATE_PENDING_RETRY_FRAMES;
+    if (g_core.engine_started)
+        core_show_message("OpenJKDF2: state load queued - it applies as soon as the game is ready");
+    core_log(RETRO_LOG_INFO, "state restore deferred (engine_started=%d)\n",
+             g_core.engine_started ? 1 : 0);
+    return true;
+}
 
 RETRO_API void* retro_get_memory_data(unsigned id) { (void)id; return NULL; }
 RETRO_API size_t retro_get_memory_size(unsigned id) { (void)id; return 0; }

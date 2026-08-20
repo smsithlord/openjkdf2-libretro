@@ -1,0 +1,26 @@
+# Core info file for the OpenJKDF2 libretro core. Frontends read this from
+# their info directory (keyed by the core's dll basename). Without it,
+# RetroArch >= 1.15 disables savestates entirely (a core with no info file
+# gets savestate support level 0). savestate_features "basic" enables the
+# save/load state slots while keeping rewind ("serialized") and
+# run-ahead/netplay ("deterministic") off -- correct for this core: states
+# are engine savegames restored asynchronously, not frame-exact memory
+# snapshots (see DESIGN.md).
+display_name = "Star Wars: Jedi Knight - Dark Forces II (OpenJKDF2)"
+categories = "Game engine"
+authors = "shinyquagsire23|OpenJKDF2 contributors"
+corename = "OpenJKDF2"
+supported_extensions = "gob|goo"
+license = "MIT"
+permissions = ""
+supports_no_game = "false"
+database = ""
+manufacturer = "LucasArts"
+systemname = "Jedi Knight: Dark Forces II"
+savestate = "true"
+savestate_features = "basic"
+cheats = "false"
+needs_fullpath = "true"
+disk_control = "false"
+is_experimental = "false"
+description = "OpenJKDF2 engine reimplementation of Star Wars: Jedi Knight - Dark Forces II and Mysteries of the Sith. Load an episode GOB (episode/JK1.GOB) from inside a game folder that also contains resource/ from your Jedi Knight install. Savestates are the engine's own savegames: saving works wherever the native Save Game menu would, and loading restores through the engine's own load flow over the following frames."

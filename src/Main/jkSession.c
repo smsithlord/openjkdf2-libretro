@@ -21,6 +21,7 @@
 #include "Gui/jkGUITitle.h"
 #include "Dss/sithGamesave.h"
 #include "General/stdConffile.h"
+#include "General/stdFileUtil.h"
 #include "jk.h"
 
 #include <string.h>
@@ -590,4 +591,172 @@ int jkSession_StartBootSave(void)
     stdPlatform_Printf("jkSession: full-state resume from %s (episode '%s', map '%s')\n",
                        fpath, header.episodeName, header.jklName);
     return jkMain_sub_4034D0(header.episodeName, saveFname, header.jklName, header.saveName);
+}
+
+// ---------------------------------------------------------------------------
+// Frontend savestate bridge (retro_serialize / retro_unserialize; devdocs/09).
+
+#define JKSESSION_STATE_TMP_FNAME     "_JKSTATE_TMP.jks"
+#define JKSESSION_STATE_PENDING_FNAME "_JKSTATE_PENDING.jks"
+
+int jkSession_StateCapture(void* pOut, unsigned int outCap, unsigned int* pOutLen)
+{
+    if (!pOut || !pOutLen)
+        return 0;
+    *pOutLen = 0;
+
+    // Same gate as the Save Game menu: a loaded world with a local player
+    // (sithGamesave_Save itself refuses dead players and MP submodes) --
+    // works from gameplay AND from inside the ESC menu. Refused with no
+    // profile (no player/<name>/ dir), in MP (no savegame system), or while
+    // a save/load is armed but unserviced: a Save now would clobber the
+    // armed operation's filename/header globals. NOTE
+    // jkPlayer_bLoadingSomething is deliberately NOT checked: it's an
+    // episode-entry-resolution flag that stays set through gameplay after a
+    // direct boot (only the level-advance logic clears it), not a
+    // transition-in-flight signal.
+    if (!sithWorld_g_pCurrentWorld || !sithPlayer_g_pLocalPlayerThing
+        || sithNet_isMulti || !jkPlayer_playerShortName[0]
+        || sithGamesave_state != SITH_GS_NONE)
+    {
+        stdPlatform_Printf("jkSession: state capture refused (world=%d player=%d multi=%d profile=%d gsState=%d)\n",
+                           sithWorld_g_pCurrentWorld != NULL, sithPlayer_g_pLocalPlayerThing != NULL,
+                           sithNet_isMulti, jkPlayer_playerShortName[0] != 0,
+                           sithGamesave_state);
+        return 0;
+    }
+
+    char fpath[128];
+    sithGamesave_GetProfilePath(fpath, sizeof(fpath), JKSESSION_STATE_TMP_FNAME);
+
+    // Process() gives no write-success signal, so truncate any previous
+    // scratch save first -- a failed write then reads back as 0 bytes
+    // instead of silently reviving an older state.
+    stdFile_t fh = pLowLevelHS->fileOpen(fpath, "wb");
+    if (fh)
+        pLowLevelHS->fileClose(fh);
+
+    // Every save write repoints sithGamesave_autosave_fname (the death-
+    // respawn reload target) at itself; a scratch capture must not change
+    // where dying sends the player.
+    char autosaveBackup[128];
+    _strncpy(autosaveBackup, sithGamesave_autosave_fname, 127);
+    autosaveBackup[127] = 0;
+
+    // '~'-less display name: the Load Game list only shows saves whose name
+    // contains '~', so the scratch save never appears there.
+    if (!sithGamesave_Save(JKSESSION_STATE_TMP_FNAME, 1, 0, u"libretro savestate"))
+        return 0;
+    // Save only arms SITH_GS_SAVE; flush it now (the save menu's precedent).
+    sithGamesave_Process();
+
+    _strncpy(sithGamesave_autosave_fname, autosaveBackup, 127);
+    sithGamesave_autosave_fname[127] = 0;
+
+    fh = pLowLevelHS->fileOpen(fpath, "rb");
+    if (!fh)
+    {
+        stdPlatform_Printf("jkSession: state capture failed (no %s)\n", fpath);
+        return 0;
+    }
+    // Size via fseek/ftell: the POSIX/SDL host services never populate
+    // fileSize (stdPlatform_InitServices), so that slot is a NULL call here.
+    pLowLevelHS->fseek(fh, 0, SEEK_END);
+    int len = pLowLevelHS->ftell(fh);
+    pLowLevelHS->fseek(fh, 0, SEEK_SET);
+    if (len < (int)sizeof(sithGamesave_Header) || (unsigned int)len > outCap)
+    {
+        pLowLevelHS->fileClose(fh);
+        stdPlatform_Printf("jkSession: state capture failed (%s is %d bytes, cap %u)\n",
+                           fpath, len, outCap);
+        return 0;
+    }
+    int bOk = pLowLevelHS->fileRead(fh, pOut, len) == (size_t)len;
+    pLowLevelHS->fileClose(fh);
+    if (!bOk)
+        return 0;
+
+    *pOutLen = (unsigned int)len;
+    stdPlatform_Printf("jkSession: state captured (%d byte savegame)\n", len);
+    return 1;
+}
+
+int jkSession_StateRestore(const void* pData, unsigned int len)
+{
+    // The payload must lead with the engine's own save header -- the same
+    // validation the Load Game menu and StartBootSave run.
+    static sithGamesave_Header header; // ~1.7 KB; keep it off the stack
+    if (!pData || len < sizeof(sithGamesave_Header))
+        return JKSESSION_STATE_BAD;
+    _memcpy(&header, pData, sizeof(header));
+    if (header.version != 6 && !(Main_bMotsCompat && header.version == 0x7D6))
+    {
+        stdPlatform_Printf("jkSession: state restore rejected (save version %d)\n",
+                           header.version);
+        return JKSESSION_STATE_BAD;
+    }
+
+    // Not-ready conditions are retryable: the core polls a deferred restore
+    // (the frontend's auto-load-state fires before the engine boots) until
+    // these clear. Arming while a boot level-load is queued is fine -- the
+    // restore's own gui-state request supersedes it, which is exactly what
+    // "load a state at startup" should do. (jkPlayer_bLoadingSomething is
+    // not a transition signal -- see StateCapture.)
+    if (!jkPlayer_playerShortName[0] || sithNet_isMulti
+        || sithGamesave_state != SITH_GS_NONE)
+        return JKSESSION_STATE_RETRY;
+
+    // Park the bytes as a pending save in the profile dir.
+    char fpath[128];
+    {
+        char shortName[32];
+        char dpath[64];
+        stdString_WcharToChar(shortName, jkPlayer_playerShortName, 31);
+        shortName[31] = 0;
+        stdString_snprintf(dpath, sizeof(dpath), "player%c%s",
+                           LEC_PATH_SEPARATOR_CHR, shortName);
+        stdFileUtil_MkDir(dpath);
+    }
+    sithGamesave_GetProfilePath(fpath, sizeof(fpath), JKSESSION_STATE_PENDING_FNAME);
+    stdFile_t fh = pLowLevelHS->fileOpen(fpath, "wb");
+    if (!fh)
+    {
+        stdPlatform_Printf("jkSession: state restore failed (cannot write %s)\n", fpath);
+        return JKSESSION_STATE_RETRY;
+    }
+    int bOk = pLowLevelHS->fileWrite(fh, (void*)pData, len) == (size_t)len;
+    pLowLevelHS->fileClose(fh);
+    if (!bOk)
+    {
+        stdPlatform_Printf("jkSession: state restore failed (short write to %s)\n", fpath);
+        return JKSESSION_STATE_RETRY;
+    }
+
+    // The save's own position wins -- never let a pose teleport fire on top.
+    jkSession_bPendingPosition = 0;
+
+    char fname[] = JKSESSION_STATE_PENDING_FNAME;
+    SithWorld* pWorld = sithWorld_g_pCurrentWorld;
+    if (pWorld
+        && !__strcmpi(header.episodeName, pWorld->episodeName)
+        && !__strcmpi(header.jklName, pWorld->map_jkl_fname))
+    {
+        // Live world, same episode+map: the Load Game menu's quick route --
+        // arms SITH_GS_LOAD, serviced by the engine loop's next Process.
+        if (!jkPlayer_LoadSave(fname))
+        {
+            stdPlatform_Printf("jkSession: state restore failed (LoadSave refused %s)\n", fname);
+            return JKSESSION_STATE_BAD;
+        }
+    }
+    else
+    {
+        // Anything else (in a menu, another map, another episode, no world):
+        // the menu's no-world route -- JK_GAMEMODE_UNK mounts the header's
+        // episode, then gameMode 1 runs sithGamesave_Restore.
+        jkMain_sub_4034D0(header.episodeName, fname, header.jklName, header.saveName);
+    }
+    stdPlatform_Printf("jkSession: state restore queued (episode '%s', map '%s')\n",
+                       header.episodeName, header.jklName);
+    return JKSESSION_STATE_OK;
 }
