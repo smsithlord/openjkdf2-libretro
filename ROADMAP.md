@@ -291,14 +291,29 @@ pacing. Now (see DESIGN.md "Audio" for the implemented shape):
 
 ## M3 — options, platforms, lifecycle polish
 
-- [ ] **Core options** (v2 API):
-      `openjkdf2_use_mods` (gates the `mods/` scan via a small engine flag at
-      [src/Main/jkRes.c:268](src/Main/jkRes.c#L268); default off per project brief —
-      flip current always-on behavior),
-      `openjkdf2_resolution` (internal render size → `SET_GEOMETRY` +
-      `Window_resized = 1`),
-      `openjkdf2_autostart_episode` (derive `-episode <rom name> -autostart`),
-      `openjkdf2_hires_assets` (skip `Res1hi.gob`).
+- [x] **`openjkdf2_resolution`** — DONE (2026-08-20, pulled forward from M3).
+      Internal render size, applied live: `Window_xSize/ySize` +
+      `Window_resized = 1` (the engine's own resize path) + `SET_GEOMETRY`.
+      4:3, 16:9 and 16:10 sizes up to the declared 1920x1440 maximum, so no
+      AV-info reinit. Verified booting at 1280x720 (frontend reports aspect
+      1.778, widescreen FOV rendered natively — not stretched or cropped)
+      and at 1920x1440 (aspect 1.333).
+- [x] ~~`openjkdf2_autostart_episode`~~ — DROPPED: fully superseded by
+      `openjkdf2_boot`, which already autostarts the ROM's episode in
+      `episode`/`level`/`resume` and offers `intro`/`menu` as the opt-outs.
+- [ ] `openjkdf2_use_mods` — **needs a decision, see note below.** Would gate
+      the `mods/` scan at [src/Main/jkRes.c:268](src/Main/jkRes.c#L268).
+      Upstream behavior is always-on (any `mods/*.gob` overrides `resource/`),
+      so the brief's "default off" would silently ignore a user's mods folder.
+      Recommend: either drop it, or ship it defaulting ON purely as a
+      "disable my mods" escape hatch.
+- [ ] `openjkdf2_hires_assets` — **needs a decision, see note below.** Would
+      skip `Res1hi.gob`. But `Res1hi.gob` is in `InstallHelper`'s
+      `aRequiredAssets` and is the only art GOB in a modern install (the
+      test basefolder has just `Res1hi.gob` + `Res2.gob`; the low-res twin
+      `Res1low.gob` shipped only in the CD's MININSTALL). Skipping it on a
+      modern install means missing art, not "low-res mode". Recommend: drop
+      unless someone actually installs from CD media.
 - [ ] **MoTS**: verify `.goo` boot end-to-end (`Main_bMotsCompat`, `JKM.goo`).
 - [x] ~~retro_reset + clean unload~~ — promoted to the lifecycle sprint above.
 - [ ] Frame-time callback (`SET_FRAME_TIME_CALLBACK`) → `sithTime`, so

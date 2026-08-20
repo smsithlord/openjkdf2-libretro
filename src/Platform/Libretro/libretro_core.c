@@ -136,6 +136,12 @@ typedef struct core_state_t
     int boot_mode;           /* JKSESSION_BOOT_* (INTRO plays the stock movie; every other mode skips it) */
     int direct_boot_filter;  /* JKSESSION_DIRECT_* — which episode types direct-boot */
 
+    /* Internal render size (openjkdf2_resolution). Applied at boot and live
+     * on change; always <= CORE_MAX_WIDTH/HEIGHT so SET_GEOMETRY never needs
+     * an AV-info reinit. */
+    int res_width;
+    int res_height;
+
     /* Deferred savestate restore: retro_unserialize before the engine is up
      * (the frontend's auto-load-state fires right after content load) parks a
      * copy here; retro_run retries it until the booted engine has a profile
@@ -604,6 +610,7 @@ static void core_poll_input(void)
 /* Forward decls (defined in the cursor / fiber / API sections below). */
 static void core_free_cursor_gl(bool delete_objects);
 static void core_refresh_options(void);
+static void core_apply_resolution(void);
 
 static void core_context_reset(void)
 {
@@ -881,10 +888,10 @@ static bool core_boot_engine(void)
     }
     s_gl_ready = true;
 
-    Window_xSize = CORE_BASE_WIDTH;
-    Window_ySize = CORE_BASE_HEIGHT;
-    Window_screenXSize = CORE_BASE_WIDTH;
-    Window_screenYSize = CORE_BASE_HEIGHT;
+    Window_xSize = g_core.res_width;
+    Window_ySize = g_core.res_height;
+    Window_screenXSize = g_core.res_width;
+    Window_screenYSize = g_core.res_height;
     Window_resized = 1;
 
     /* Make std3D's startup capture of GL_FRAMEBUFFER_BINDING see the
@@ -1057,6 +1064,29 @@ static void core_refresh_options(void)
             g_core.boot_mode = JKSESSION_BOOT_RESUME;
     }
 
+    /* Internal render size. "<w>x<h>"; anything unparseable or outside the
+     * declared maximum falls back to the 4:3 base. */
+    var.key = "openjkdf2_resolution";
+    var.value = NULL;
+    g_core.res_width = CORE_BASE_WIDTH;
+    g_core.res_height = CORE_BASE_HEIGHT;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    {
+        int w = 0, h = 0;
+        if (sscanf(var.value, "%dx%d", &w, &h) == 2
+            && w >= CORE_BASE_WIDTH && h >= CORE_BASE_HEIGHT
+            && w <= CORE_MAX_WIDTH && h <= CORE_MAX_HEIGHT)
+        {
+            g_core.res_width = w;
+            g_core.res_height = h;
+        }
+        else
+        {
+            core_log(RETRO_LOG_WARN, "ignoring resolution '%s' (need WxH within %dx%d..%dx%d)\n",
+                     var.value, CORE_BASE_WIDTH, CORE_BASE_HEIGHT, CORE_MAX_WIDTH, CORE_MAX_HEIGHT);
+        }
+    }
+
     /* Direct-boot episode-type filter; the game mode itself always follows
      * the episode's own TYPE (jkSession_ResolveAutoBootMode). */
     var.key = "openjkdf2_boot_game_type";
@@ -1070,6 +1100,40 @@ static void core_refresh_options(void)
             g_core.direct_boot_filter = JKSESSION_DIRECT_MP_ONLY;
     }
 
+}
+
+/* Push a resolution change to both sides: the frontend's geometry (viewport
+ * and aspect follow without an AV-info reinit -- every offered size is
+ * within the declared maximum), and the engine's window globals.
+ * Window_resized is the engine's own resize path: the next engine frame runs
+ * jkMain_FixRes + stdDisplay_SetMode and rebuilds its render targets
+ * (Window.c). Safe from here -- the engine fiber is parked at its frame
+ * boundary, so nothing is mid-render. */
+static void core_apply_resolution(void)
+{
+    if (g_core.environ_cb)
+    {
+        struct retro_game_geometry geom;
+        memset(&geom, 0, sizeof(geom));
+        geom.base_width = (unsigned)g_core.res_width;
+        geom.base_height = (unsigned)g_core.res_height;
+        geom.max_width = CORE_MAX_WIDTH;
+        geom.max_height = CORE_MAX_HEIGHT;
+        geom.aspect_ratio = (float)g_core.res_width / (float)g_core.res_height;
+        g_core.environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &geom);
+    }
+
+    /* Before boot, core_boot_engine picks these up itself. */
+    if (g_core.engine_started)
+    {
+        Window_xSize = g_core.res_width;
+        Window_ySize = g_core.res_height;
+        Window_screenXSize = g_core.res_width;
+        Window_screenYSize = g_core.res_height;
+        Window_resized = 1;
+    }
+    core_log(RETRO_LOG_INFO, "internal resolution: %dx%d\n",
+             g_core.res_width, g_core.res_height);
 }
 
 RETRO_API void retro_set_environment(retro_environment_t cb)
@@ -1100,6 +1164,27 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                 "episode",
             },
             {
+                "openjkdf2_resolution",
+                "Internal resolution",
+                "Resolution the game renders at. Applies immediately. Widescreen sizes widen the field of view "
+                "(the engine renders widescreen natively) rather than cropping; set the frontend's aspect ratio "
+                "to 'Core provided' to see them uncropped. Higher sizes cost GPU time but the game's own art "
+                "stays the same resolution.",
+                { { "640x480", "640x480 (4:3, original)" },
+                  { "800x600", "800x600 (4:3)" },
+                  { "1024x768", "1024x768 (4:3)" },
+                  { "1280x960", "1280x960 (4:3)" },
+                  { "1920x1440", "1920x1440 (4:3)" },
+                  { "1280x720", "1280x720 (16:9)" },
+                  { "1600x900", "1600x900 (16:9)" },
+                  { "1920x1080", "1920x1080 (16:9)" },
+                  { "1280x800", "1280x800 (16:10)" },
+                  { "1680x1050", "1680x1050 (16:10)" },
+                  { "1920x1200", "1920x1200 (16:10)" },
+                  { NULL, NULL } },
+                "640x480",
+            },
+            {
                 "openjkdf2_boot_game_type",
                 "Direct boot: episode types",
                 "The game mode (singleplayer, or hosting a local multiplayer session) always follows the loaded episode's "
@@ -1123,6 +1208,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
             static const struct retro_variable vars[] = {
                 { "openjkdf2_boot", "Boot mode; episode|intro|menu|level|resume" },
                 { "openjkdf2_boot_game_type", "Direct boot episode types; all|singleplayer|multiplayer" },
+                { "openjkdf2_resolution", "Internal resolution; 640x480|800x600|1024x768|1280x960|1920x1440|1280x720|1600x900|1920x1080|1280x800|1680x1050|1920x1200" },
                 { NULL, NULL },
             };
             cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
@@ -1191,11 +1277,13 @@ RETRO_API void retro_get_system_info(struct retro_system_info* info)
 RETRO_API void retro_get_system_av_info(struct retro_system_av_info* info)
 {
     memset(info, 0, sizeof(*info));
-    info->geometry.base_width = CORE_BASE_WIDTH;
-    info->geometry.base_height = CORE_BASE_HEIGHT;
+    if (!g_core.res_width || !g_core.res_height)
+        core_refresh_options(); /* av_info can be asked for before the first refresh */
+    info->geometry.base_width = g_core.res_width;
+    info->geometry.base_height = g_core.res_height;
     info->geometry.max_width = CORE_MAX_WIDTH;
     info->geometry.max_height = CORE_MAX_HEIGHT;
-    info->geometry.aspect_ratio = 4.0f / 3.0f;
+    info->geometry.aspect_ratio = (float)g_core.res_width / (float)g_core.res_height;
     info->timing.fps = CORE_FPS;
     info->timing.sample_rate = CORE_SAMPLE_RATE;
 }
@@ -1493,7 +1581,12 @@ RETRO_API void retro_run(void)
     {
         bool updated = false;
         if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
+        {
+            int prev_w = g_core.res_width, prev_h = g_core.res_height;
             core_refresh_options();
+            if (g_core.res_width != prev_w || g_core.res_height != prev_h)
+                core_apply_resolution();
+        }
     }
 
     /* Injecting input before engine startup is safe: the window-message
