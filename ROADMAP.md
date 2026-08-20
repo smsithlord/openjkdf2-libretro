@@ -118,6 +118,45 @@ All verified in RetroArch:
       `sithGamesave_RestoreFile` (LIBRETRO_BUILD) writes the real map back
       after a successful restore.
 
+## Frontend savestates (devdocs/09) — DONE
+
+Save State / Load State in the frontend work as a bridge over the engine's
+own savegame system — a state is an engine .jks in a fixed 8 MiB envelope
+(zero padding compresses to ~nothing; real state file ≈ 47 KB). Load is a
+restore *signal*: it queues the Load Game menu's own flow and completes over
+the following frames. All verified in RetroArch via UDP commands:
+
+- [x] `retro_serialize` = the Save Game menu's `sithGamesave_Save` +
+      immediate `Process` into a hidden scratch save (`~`-less display name
+      keeps it out of the Load Game list), read back into the frontend
+      buffer. Death-respawn target (`sithGamesave_autosave_fname`) preserved
+      around the capture. Works in gameplay and in the ESC menu; refused
+      (empty state) in MP / no-world / mid-save-load.
+- [x] `retro_unserialize` = validate the embedded save header, park
+      `_JKSTATE_PENDING.jks`, arm the menu's exact load branching
+      (`jkPlayer_LoadSave` live same-map; `jkMain_sub_4034D0` otherwise);
+      pending pose teleport cleared. Not-ready loads (pre-boot auto-load,
+      title screen without a profile) park in the core and self-arm from
+      `retro_run` when the engine is ready (60 s budget, OSD give-up).
+- [x] Serialize never hard-fails for "nothing to capture" — it writes an
+      empty state: RetroArch's load flow aborts the entire load if its
+      pre-load undo snapshot fails, so a failing serialize at the title menu
+      would make load-state unusable exactly where it's wanted.
+- [x] Quirks declared (`INCOMPLETE | PLATFORM | ENDIAN`) + savestate-context
+      check: rewind/run-ahead/netplay never route through this path.
+- [x] Packaging: new core info file
+      (`src/Platform/Libretro/openjkdf2_libretro.info`,
+      `savestate_features = "basic"`) — RetroArch ≥ 1.15 disables savestates
+      entirely for cores without one, and only matches it when the DLL is in
+      the frontend's cores directory (harness now deploys there).
+- [x] Bugs found in testing: `pLowLevelHS->fileSize` is NULL on this build
+      (POSIX host services never set it — crashed RetroArch at first
+      capture; now fseek/ftell), and `jkPlayer_bLoadingSomething` is not a
+      transition signal (stays set through gameplay after a direct boot —
+      dropped from the guards).
+- [x] Regressions checked: session resume still writes `_JKSESSION_JK1.jks`
+      at quit; `resume` boot follows the last savestate load by design.
+
 ## M1 — playable v1 (finish line for "it's a real core")
 
 ### Hide/neutralize features that can't work under a frontend
