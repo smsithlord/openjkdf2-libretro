@@ -30,6 +30,17 @@ typedef enum jkSessionBoot
     JKSESSION_BOOT_RESUME = 2, // resume last session; falls back to DIRECT
 } jkSessionBoot;
 
+// Which episode types a DIRECT boot applies to. The game mode itself
+// (singleplayer vs hosting a local multiplayer session) always follows the
+// episode's own TYPE from its episode.jk; this only limits which episodes get
+// direct-booted at all -- others fall back to the game's main menu.
+typedef enum jkSessionDirectFilter
+{
+    JKSESSION_DIRECT_ALL     = 0,
+    JKSESSION_DIRECT_SP_ONLY = 1,
+    JKSESSION_DIRECT_MP_ONLY = 2,
+} jkSessionDirectFilter;
+
 extern jkSessionMode jkSession_currentMode;
 extern int           jkSession_pendingMpHosting;
 extern int           jkSession_bResumed;
@@ -61,13 +72,20 @@ int jkSession_LoadAndApply(const char* pExpectedEpisode);
 void jkSession_ApplyPendingPosition(void);
 
 // Core-facing boot configuration (called before the engine boots).
-void jkSession_ConfigureBoot(int bootMode, int bMultiplayer,
-                             const char* pRomEpisode, int bRestorePosition,
-                             int bSkipIntroVideo);
+void jkSession_ConfigureBoot(int bootMode, int directFilter,
+                             const char* pRomEpisode, int bSkipIntroVideo);
 
 // Applies the configured boot mode; called from Main_Startup right after
 // Main_ParseCmdLine (LIBRETRO_BUILD hook). MENU is a no-op.
 void jkSession_ArmBoot(void);
+
+// For a DIRECT boot: probe the ROM episode's TYPE (mount + parse episode.jk)
+// and set the game mode from it -- singleplayer episodes boot singleplayer,
+// any multiplayer type hosts a local multiplayer session. Called from
+// Main_StartupDedicated before anything mode-dependent runs (LIBRETRO_BUILD
+// hook). Returns 0 when the episode's type is excluded by the direct-boot
+// filter -- the caller cancels the autostart and the title flow runs instead.
+int jkSession_ResolveAutoBootMode(void);
 
 #ifdef __cplusplus
 }

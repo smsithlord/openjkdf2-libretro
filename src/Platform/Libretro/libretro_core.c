@@ -91,8 +91,7 @@ extern void libretro_stdMci_Pump(void); /* stdMci.c: music -> AL stream */
 #define CORE_AUDIO_FRAMES 800 /* 48000 / 60 */
 
 /* Cursor wedge: don't draw until the pointer has actually been used, and
- * auto-hide after this many frames without motion/button activity (~3s).
- * Behind the "Auto-hide mouse pointer" core option (default on). */
+ * auto-hide after this many frames without motion/button activity (~3s). */
 #define CURSOR_IDLE_HIDE_FRAMES 180
 
 typedef struct core_state_t
@@ -128,16 +127,14 @@ typedef struct core_state_t
     int last_mouse_l;
     int last_mouse_r;
 
-    /* Cursor auto-hide (core option): no wedge until the pointer is used,
-     * then hide again after CURSOR_IDLE_HIDE_FRAMES without activity. */
-    bool cursor_autohide;    /* the option value */
+    /* Cursor auto-hide (always on): no wedge until the pointer is used, then
+     * hide again after CURSOR_IDLE_HIDE_FRAMES without activity. */
     bool cursor_seen_motion;
     int cursor_idle_frames;
 
     /* Boot/resume core options (consumed at engine boot via jkSession). */
     int boot_mode;           /* JKSESSION_BOOT_* */
-    bool boot_multiplayer;   /* direct boot hosts an MP session instead of SP */
-    bool resume_position;    /* resume restores exact position, not just map */
+    int direct_boot_filter;  /* JKSESSION_DIRECT_* — which episode types direct-boot */
     bool skip_intro;         /* menu boot skips the pre-title intro video */
 
     int16_t audio_out[CORE_AUDIO_FRAMES * 2];
@@ -899,9 +896,8 @@ static bool core_boot_engine(void)
     /* Boot-mode options (menu / direct / resume) are applied by the
      * jkSession_ArmBoot hook inside Main_Startup, after cmdline parsing. */
     core_refresh_options();
-    jkSession_ConfigureBoot(g_core.boot_mode, g_core.boot_multiplayer ? 1 : 0,
-                            g_core.episode_name, g_core.resume_position ? 1 : 0,
-                            g_core.skip_intro ? 1 : 0);
+    jkSession_ConfigureBoot(g_core.boot_mode, g_core.direct_boot_filter,
+                            g_core.episode_name, g_core.skip_intro ? 1 : 0);
 
     int result = Main_Startup(g_core.cmdline);
     if (!result)
@@ -1035,13 +1031,6 @@ static void core_refresh_options(void)
 {
     struct retro_variable var;
 
-    var.key = "openjkdf2_cursor_autohide";
-    var.value = NULL;
-    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-        g_core.cursor_autohide = strcmp(var.value, "disabled") != 0;
-    else
-        g_core.cursor_autohide = true;
-
     var.key = "openjkdf2_boot";
     var.value = NULL;
     g_core.boot_mode = JKSESSION_BOOT_MENU;
@@ -1053,19 +1042,18 @@ static void core_refresh_options(void)
             g_core.boot_mode = JKSESSION_BOOT_RESUME;
     }
 
+    /* Direct-boot episode-type filter; the game mode itself always follows
+     * the episode's own TYPE (jkSession_ResolveAutoBootMode). */
     var.key = "openjkdf2_boot_game_type";
     var.value = NULL;
+    g_core.direct_boot_filter = JKSESSION_DIRECT_ALL;
     if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-        g_core.boot_multiplayer = strcmp(var.value, "multiplayer") == 0;
-    else
-        g_core.boot_multiplayer = false;
-
-    var.key = "openjkdf2_resume_position";
-    var.value = NULL;
-    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-        g_core.resume_position = strcmp(var.value, "disabled") != 0;
-    else
-        g_core.resume_position = true;
+    {
+        if (!strcmp(var.value, "singleplayer"))
+            g_core.direct_boot_filter = JKSESSION_DIRECT_SP_ONLY;
+        else if (!strcmp(var.value, "multiplayer"))
+            g_core.direct_boot_filter = JKSESSION_DIRECT_MP_ONLY;
+    }
 
     var.key = "openjkdf2_skip_intro";
     var.value = NULL;
@@ -1100,20 +1088,15 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
             },
             {
                 "openjkdf2_boot_game_type",
-                "Direct boot: game type",
-                "Whether 'Straight into episode' starts the episode as singleplayer or hosts a local multiplayer-style "
-                "session (free exploration; MP episode GOBs like JK1MP need this).",
-                { { "singleplayer", "Singleplayer" },
-                  { "multiplayer", "Multiplayer (host)" },
+                "Direct boot: episode types",
+                "The game mode (singleplayer, or hosting a local multiplayer session) always follows the loaded episode's "
+                "own type. This limits which episode types 'Straight into episode' applies to; episodes outside the "
+                "selection boot to the game's main menu instead.",
+                { { "all", "All episodes" },
+                  { "singleplayer", "Singleplayer episodes only" },
+                  { "multiplayer", "Multiplayer episodes only" },
                   { NULL, NULL } },
-                "singleplayer",
-            },
-            {
-                "openjkdf2_resume_position",
-                "Resume: restore exact position",
-                "When resuming a session, teleport back to where you were standing. Disabled resumes the map at its normal start point.",
-                { { "enabled", NULL }, { "disabled", NULL }, { NULL, NULL } },
-                "enabled",
+                "all",
             },
             {
                 "openjkdf2_skip_intro",
@@ -1121,13 +1104,6 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                 "Skip the pre-title intro movie when booting to the game's main menu (same effect as the in-game 'disable cutscenes' setting, without changing the player profile).",
                 { { "disabled", NULL }, { "enabled", NULL }, { NULL, NULL } },
                 "disabled",
-            },
-            {
-                "openjkdf2_cursor_autohide",
-                "Auto-hide mouse pointer",
-                "Show the core-drawn menu pointer only after the mouse is used, and hide it again after a few seconds of inactivity.",
-                { { "enabled", NULL }, { "disabled", NULL }, { NULL, NULL } },
-                "enabled",
             },
             { NULL, NULL, NULL, { { NULL, NULL } }, NULL },
         };
@@ -1140,10 +1116,8 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
         {
             static const struct retro_variable vars[] = {
                 { "openjkdf2_boot", "Boot mode; menu|episode|resume" },
-                { "openjkdf2_boot_game_type", "Direct boot game type; singleplayer|multiplayer" },
-                { "openjkdf2_resume_position", "Resume restores exact position; enabled|disabled" },
+                { "openjkdf2_boot_game_type", "Direct boot episode types; all|singleplayer|multiplayer" },
                 { "openjkdf2_skip_intro", "Skip intro videos; disabled|enabled" },
-                { "openjkdf2_cursor_autohide", "Auto-hide mouse pointer; enabled|disabled" },
                 { NULL, NULL },
             };
             cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
@@ -1463,11 +1437,10 @@ RETRO_API void retro_run(void)
     SwitchToFiber(s_engine_fiber);
 
     /* Overlay the cursor wedge whenever the GUI wants a visible cursor --
-     * under the auto-hide option, only after the pointer has been used and
-     * not left idle. */
+     * only after the pointer has been used and not left idle (auto-hide is
+     * always on; no OS cursor overlays a frontend viewport). */
     if (s_gl_ready && g_core.engine_started && !jkGame_isDDraw && libretro_GetCursorVisible()
-        && (!g_core.cursor_autohide
-            || (g_core.cursor_seen_motion && g_core.cursor_idle_frames < CURSOR_IDLE_HIDE_FRAMES)))
+        && g_core.cursor_seen_motion && g_core.cursor_idle_frames < CURSOR_IDLE_HIDE_FRAMES)
         core_draw_cursor();
 
     /* Don't leak engine GL state into the frontend's own rendering. */

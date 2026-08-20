@@ -155,6 +155,15 @@ int Main_StartupDedicated(int bFullyDedicated)
     }
     stdPlatform_Printf("Autostarting level: `%s`\n", bStartEpisodeFromTop ? Main_strEpisode : Main_strMap);
 
+#ifdef LIBRETRO_BUILD
+    // Direct boot: SP-vs-MP follows the episode's own TYPE (probed here, now
+    // that the resource system is up and before anything mode-dependent
+    // below). Returns 0 when the direct-boot episode-type filter excludes
+    // this episode -- cancel the autostart and let the title flow run.
+    if (!jkSession_ResolveAutoBootMode())
+        return 0;
+#endif
+
     if (bFullyDedicated) {
         strcpy(aTmpPlayerShortName, "ServerDed");
         stdString_CharToWchar(jkPlayer_playerShortName, aTmpPlayerShortName, 31);

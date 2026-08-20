@@ -7,6 +7,7 @@
 #include "Main/Main.h"
 #include "Main/jkRes.h"
 #include "Main/jkMain.h"
+#include "Main/jkEpisode.h"
 #include "World/jkPlayer.h"
 #include "World/sithThing.h"
 #include "World/sithSector.h"
@@ -41,9 +42,11 @@ extern char    Main_strMap[128+4];
 
 // Boot configuration handed in by the core before the engine starts.
 static int  jkSession_bootMode = JKSESSION_BOOT_MENU;
-static int  jkSession_bootMp = 0;
+static int  jkSession_directFilter = JKSESSION_DIRECT_ALL;
 static char jkSession_romEpisode[32] = {0};
-static int  jkSession_bRestorePosition = 1;
+// Set when a DIRECT boot was armed: the SP/MP mode is decided later by
+// jkSession_ResolveAutoBootMode from the episode's own TYPE.
+static int  jkSession_bAutoModePending = 0;
 
 // Pending teleport state -- populated by LoadAndApply, consumed once by
 // ApplyPendingPosition after the player thing becomes valid.
@@ -92,7 +95,11 @@ void jkSession_SaveCurrent(void)
 {
     const char* fpath = JKSESSION_FNAME;
 
-    if (!jkRes_episodeGobName[0] && !jkMain_aLevelJklFname[0])
+    // A record without a map can never be resumed -- and at direct-boot time
+    // the loader-hook save fires while the level-name global is still empty
+    // (before first-level resolution), which would clobber a good record with
+    // a useless one.
+    if (!jkRes_episodeGobName[0] || !jkMain_aLevelJklFname[0])
         return;
 
     // Position snapshot -- only when the local player thing is alive and the
@@ -372,22 +379,21 @@ void jkSession_ApplyPendingPosition(void)
     jkSession_bPendingPosition = 0;
 }
 
-void jkSession_ConfigureBoot(int bootMode, int bMultiplayer,
-                             const char* pRomEpisode, int bRestorePosition,
-                             int bSkipIntroVideo)
+void jkSession_ConfigureBoot(int bootMode, int directFilter,
+                             const char* pRomEpisode, int bSkipIntroVideo)
 {
     jkSession_bootMode = bootMode;
-    jkSession_bootMp = bMultiplayer;
+    jkSession_directFilter = directFilter;
     jkSession_bSkipIntroVideo = bSkipIntroVideo;
     memset(jkSession_romEpisode, 0, sizeof(jkSession_romEpisode));
     if (pRomEpisode)
         stdString_SafeStrCopy(jkSession_romEpisode, pRomEpisode, sizeof(jkSession_romEpisode));
-    jkSession_bRestorePosition = bRestorePosition;
 
     // Fresh boot: clear one-shot state from any previous engine run.
     jkSession_bResumed = 0;
     jkSession_pendingMpHosting = 0;
     jkSession_bPendingPosition = 0;
+    jkSession_bAutoModePending = 0;
     jkSession_currentMode = SESSION_MODE_NONE;
     memset(jkSession_resumeShortName, 0, sizeof(jkSession_resumeShortName));
 }
@@ -408,21 +414,59 @@ void jkSession_ArmBoot(void)
 
     if (!resumed)
     {
-        // Direct boot: autostart the ROM's episode from the top. SP leaves
-        // the map empty so Main_StartupDedicated starts the episode via its
-        // own new-game path (jkMain_LoadFile); MP leaves it empty for
-        // jkMain_loadFile2 to resolve to the episode's first entry.
+        // Direct boot: autostart the ROM's episode from the top with an empty
+        // map (the loaders resolve the episode's first level entry). The
+        // SP-vs-MP mode is NOT fixed here: jkSession_ResolveAutoBootMode
+        // probes the episode's own TYPE once the resource system is up and
+        // sets it (singleplayer episodes boot singleplayer, any multiplayer
+        // type hosts a local session).
         Main_bAutostart   = 1;
-        Main_bAutostartSp = jkSession_bootMp ? 0 : 1;
+        Main_bAutostartSp = 1; // placeholder until the type probe runs
         stdString_SafeStrCopy(Main_strEpisode, jkSession_romEpisode, sizeof(Main_strEpisode));
         Main_strMap[0] = 0;
-        jkSession_currentMode = jkSession_bootMp ? SESSION_MODE_MP : SESSION_MODE_SP;
-        if (jkSession_bootMp)
-            jkSession_pendingMpHosting = 1;
-        stdPlatform_Printf("jkSession: direct boot into episode '%s' (%s)\n",
-                           Main_strEpisode, jkSession_bootMp ? "multiplayer" : "singleplayer");
+        jkSession_bAutoModePending = 1;
+        stdPlatform_Printf("jkSession: direct boot armed for episode '%s' (mode from episode type)\n",
+                           Main_strEpisode);
+    }
+}
+
+int jkSession_ResolveAutoBootMode(void)
+{
+    if (!jkSession_bAutoModePending)
+        return 1; // resume boot (mode came from the record) or no direct boot armed
+
+    jkSession_bAutoModePending = 0;
+
+    // Probe the episode's TYPE bitmask from its episode.jk. The level loaders
+    // re-mount and re-parse right after, so this costs one extra parse and
+    // leaves no state they don't rebuild anyway.
+    int type = 0;
+    jkRes_LoadGob(Main_strEpisode);
+    if (jkEpisode_Load(&jkEpisode_mLoad))
+        type = (int)jkEpisode_mLoad.type;
+    else
+        stdPlatform_Printf("jkSession: could not read episode.jk for '%s'; assuming singleplayer\n",
+                           Main_strEpisode);
+
+    int bSp = !type || (type & JK_EPISODE_SINGLEPLAYER) != 0;
+
+    if (jkSession_directFilter == JKSESSION_DIRECT_SP_ONLY && !bSp)
+    {
+        stdPlatform_Printf("jkSession: episode '%s' is multiplayer (TYPE 0x%x) and direct boot is limited to singleplayer - booting to the menu\n",
+                           Main_strEpisode, type);
+        return 0;
+    }
+    if (jkSession_directFilter == JKSESSION_DIRECT_MP_ONLY && bSp)
+    {
+        stdPlatform_Printf("jkSession: episode '%s' is singleplayer (TYPE 0x%x) and direct boot is limited to multiplayer - booting to the menu\n",
+                           Main_strEpisode, type);
+        return 0;
     }
 
-    if (!jkSession_bRestorePosition)
-        jkSession_bPendingPosition = 0; // resume the map, use its default spawn
+    Main_bAutostartSp = bSp ? 1 : 0;
+    jkSession_currentMode = bSp ? SESSION_MODE_SP : SESSION_MODE_MP;
+    jkSession_pendingMpHosting = bSp ? 0 : 1;
+    stdPlatform_Printf("jkSession: direct boot into episode '%s' (TYPE 0x%x -> %s)\n",
+                       Main_strEpisode, type, bSp ? "singleplayer" : "multiplayer (local host)");
+    return 1;
 }
