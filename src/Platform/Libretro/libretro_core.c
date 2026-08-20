@@ -1040,13 +1040,16 @@ static void core_refresh_options(void)
 
     var.key = "openjkdf2_boot";
     var.value = NULL;
-    g_core.boot_mode = JKSESSION_BOOT_INTRO;
+    /* Default: straight into the loaded episode -- content load means "play
+     * this game"; the stock intro/menu click-through is opt-in (owner
+     * decision, 2026-08-20). Keep in sync with the option defs below. */
+    g_core.boot_mode = JKSESSION_BOOT_DIRECT;
     if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
     {
-        if (!strcmp(var.value, "menu"))
+        if (!strcmp(var.value, "intro"))
+            g_core.boot_mode = JKSESSION_BOOT_INTRO;
+        else if (!strcmp(var.value, "menu"))
             g_core.boot_mode = JKSESSION_BOOT_MENU;
-        else if (!strcmp(var.value, "episode"))
-            g_core.boot_mode = JKSESSION_BOOT_DIRECT;
         else if (!strcmp(var.value, "level"))
             g_core.boot_mode = JKSESSION_BOOT_LEVEL;
         else if (!strcmp(var.value, "resume"))
@@ -1087,13 +1090,13 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                 "'Continue from last level' starts the level you last played at its normal start point. "
                 "'Resume last session' puts you back at the exact spot you left. "
                 "The continue/resume modes fall back to the episode start, then the menu, when there is no matching session.",
-                { { "intro", "Intro video" },
+                { { "episode", "Straight into episode" },
+                  { "intro", "Intro video" },
                   { "menu", "Game main menu" },
-                  { "episode", "Straight into episode" },
                   { "level", "Continue from last level" },
                   { "resume", "Resume last session (exact spot)" },
                   { NULL, NULL } },
-                "intro",
+                "episode",
             },
             {
                 "openjkdf2_boot_game_type",
@@ -1117,7 +1120,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
         else
         {
             static const struct retro_variable vars[] = {
-                { "openjkdf2_boot", "Boot mode; intro|menu|episode|level|resume" },
+                { "openjkdf2_boot", "Boot mode; episode|intro|menu|level|resume" },
                 { "openjkdf2_boot_game_type", "Direct boot episode types; all|singleplayer|multiplayer" },
                 { NULL, NULL },
             };

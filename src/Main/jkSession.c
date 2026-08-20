@@ -22,6 +22,7 @@
 #include "Dss/sithGamesave.h"
 #include "General/stdConffile.h"
 #include "General/stdFileUtil.h"
+#include "General/util.h"
 #include "jk.h"
 
 #include <string.h>
@@ -591,6 +592,34 @@ int jkSession_StartBootSave(void)
     stdPlatform_Printf("jkSession: full-state resume from %s (episode '%s', map '%s')\n",
                        fpath, header.episodeName, header.jklName);
     return jkMain_sub_4034D0(header.episodeName, saveFname, header.jklName, header.saveName);
+}
+
+int jkSession_FindAnyProfile(char* pOut, int outSize)
+{
+    // Same enumeration as the player-select menu (jkGuiPlayer_sub_410640):
+    // subdirectories of player/ that contain their <name>.plr.
+    stdFileSearchResult searchRes;
+    char plrPath[128];
+    int bFound = 0;
+
+    stdFileSearch* pSearch = stdFileUtil_NewFind("player", 2, 0);
+    if (!pSearch)
+        return 0;
+    while (!bFound && stdFileUtil_FindNext(pSearch, &searchRes))
+    {
+        if (!searchRes.is_subdirectory || searchRes.fpath[0] == '.')
+            continue;
+        stdString_snprintf(plrPath, 128, "player%c%s%c%s.plr",
+                           LEC_PATH_SEPARATOR_CHR, searchRes.fpath,
+                           LEC_PATH_SEPARATOR_CHR, searchRes.fpath);
+        if (util_FileExistsLowLevel(plrPath))
+        {
+            stdString_SafeStrCopy(pOut, searchRes.fpath, outSize);
+            bFound = 1;
+        }
+    }
+    stdFileUtil_DisposeFind(pSearch);
+    return bFound;
 }
 
 // ---------------------------------------------------------------------------

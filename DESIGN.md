@@ -257,8 +257,22 @@ Registered via `RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2` at `retro_set_environment
 | `openjkdf2_resolution` | 640x480 … 1920x1440 | 640x480 | `Window_xSize/ySize` + `SET_GEOMETRY` (M3) |
 | `openjkdf2_autostart_episode` | disabled/enabled | disabled | derive episode from ROM filename → `-episode <name> -autostart` on the synthesized cmdline (M3) |
 | `openjkdf2_hires_assets` | enabled/disabled | enabled | investigate at M3: `Res1hi.gob` loads by wildcard; "disabled" would skip it in the resource scan |
-| `openjkdf2_boot` | intro/menu/episode/level/resume | intro | **implemented** — `jkSession_ConfigureBoot`/`ArmBoot` (src/Main/jkSession.c, ported from AAOpenJKDF2 per devdocs/06): `intro` is the stock flow (movie, then title); `menu` skips the movie (every non-intro mode does); `episode` autostarts the ROM's episode at its STARTING level (resolved by walking the episode.jk decision path — gotoA links from SEQ entry 0 — past cutscene entries; episodes have no explicit start field); `level` re-enters the last session's map at its normal start; `resume` restores the last session — in singleplayer via the engine's own savegame system (full world state: kills, pickups, inventory, health; devdocs/08), in multiplayer at the exact saved pose. The continue modes read `<basefolder>/openjkdf2_lastsession.json` and fall back to `episode` then the title |
+| `openjkdf2_boot` | episode/intro/menu/level/resume | episode | **implemented** — `jkSession_ConfigureBoot`/`ArmBoot` (src/Main/jkSession.c, ported from AAOpenJKDF2 per devdocs/06): `intro` is the stock flow (movie, then title); `menu` skips the movie (every non-intro mode does); `episode` autostarts the ROM's episode at its STARTING level (resolved by walking the episode.jk decision path — gotoA links from SEQ entry 0 — past cutscene entries; episodes have no explicit start field); `level` re-enters the last session's map at its normal start; `resume` restores the last session — in singleplayer via the engine's own savegame system (full world state: kills, pickups, inventory, health; devdocs/08), in multiplayer at the exact saved pose. The continue modes read `<basefolder>/openjkdf2_lastsession.json` and fall back to `episode` then the title |
 | `openjkdf2_boot_game_type` | all/singleplayer/multiplayer | all | **implemented** — direct-boot episode-type FILTER only: the game mode always follows the episode's own `episode.jk` TYPE (`jkSession_ResolveAutoBootMode` probes it at `Main_StartupDedicated`; SP episodes boot SP, any MP type solo-hosts a local session — works against `Networking/None`); episodes outside the selection boot to the game menu |
+
+Default is `episode` — loading content means "play this game"; the stock
+intro/menu click-through is opt-in (owner decision, 2026-08-20).
+
+Quick-start profile resolution (fixed behavior, 2026-08-20): a direct boot
+loads (1) the session record's profile when resuming, else (2) the
+registry's last-used profile if its `.plr` still exists, else (3) the first
+profile on disk (`jkSession_FindAnyProfile`, the player-select menu's
+enumeration); with no profile anywhere the autostart is CANCELLED so the
+title flow runs — the main menu's first entry forces the character-creation
+dialog, which is uncancellable when no profiles exist (profiles must exist
+for in-game option changes to persist). `jkGui_Shutdown` never persists an
+EMPTY profile name to the registry (an unattended title visit used to wipe
+the last-used profile).
 
 Not options (fixed behavior): SP resume is full-state, automatically —
 `jkSession_SaveCurrent` co-writes a per-episode session save

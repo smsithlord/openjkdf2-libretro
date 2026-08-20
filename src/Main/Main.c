@@ -58,6 +58,8 @@
 #include "Main/jkMain.h"
 #ifdef LIBRETRO_BUILD
 #include "Main/jkSession.h"
+#include "General/stdFnames.h"
+#include "General/util.h"
 #endif
 #include "Main/jkQuakeConsole.h"
 #include "Engine/rdroid.h"
@@ -181,7 +183,37 @@ int Main_StartupDedicated(int bFullyDedicated)
     }
 #endif
     else {
+#ifdef LIBRETRO_BUILD
+        // Quick-start profile resolution (episode/level boots with no
+        // record-bound profile -- the resume branch above is rule 1):
+        // (2) the registry's last-used profile, if its .plr still exists;
+        // (3) else the first profile on disk. Never invent a profile here:
+        // with none at all, cancel the autostart -- the title flow runs and
+        // the main menu's first entry forces the character-creation dialog
+        // (which is uncancellable when no profiles exist), so quick boots
+        // can't skip it. Profiles must exist for in-game option changes to
+        // persist.
+        char aPlrPath[128];
+        wuRegistry_GetStr("playerShortName", aTmpPlayerShortName, 32, "");
+        if (aTmpPlayerShortName[0]) {
+            stdString_snprintf(aPlrPath, 128, "player%c%s%c%s.plr",
+                               LEC_PATH_SEPARATOR_CHR, aTmpPlayerShortName,
+                               LEC_PATH_SEPARATOR_CHR, aTmpPlayerShortName);
+            if (!util_FileExistsLowLevel(aPlrPath)) {
+                stdPlatform_Printf("jkSession: last-used profile '%s' no longer exists\n", aTmpPlayerShortName);
+                aTmpPlayerShortName[0] = 0;
+            }
+        }
+        if (!aTmpPlayerShortName[0] && jkSession_FindAnyProfile(aTmpPlayerShortName, 32)) {
+            stdPlatform_Printf("jkSession: using first profile on disk ('%s')\n", aTmpPlayerShortName);
+        }
+        if (!aTmpPlayerShortName[0]) {
+            stdPlatform_Printf("jkSession: no player profile exists - direct boot cancelled so character creation runs\n");
+            return 0;
+        }
+#else
         wuRegistry_GetStr("playerShortName", aTmpPlayerShortName, 32, "ServerDed");
+#endif
         stdString_CharToWchar(jkPlayer_playerShortName, aTmpPlayerShortName, 31);
         jkPlayer_playerShortName[31] = 0;
         jkPlayer_CreateConf(jkPlayer_playerShortName);

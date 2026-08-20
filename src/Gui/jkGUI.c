@@ -392,6 +392,13 @@ void jkGui_Shutdown()
 
     stdString_WcharToChar(playerShortName, jkPlayer_playerShortName, 31);
     playerShortName[31] = 0;
+#ifdef LIBRETRO_BUILD
+    // Never persist an EMPTY profile name: entering the player menus clears
+    // the global until a profile is picked, so quitting from an unattended
+    // title screen used to wipe the registry's last-used profile -- which
+    // direct boots rely on to resolve their profile (Main_StartupDedicated).
+    if (playerShortName[0])
+#endif
     wuRegistry_SaveStr("playerShortName", playerShortName);
 
 #ifndef SDL2_RENDER

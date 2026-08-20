@@ -103,6 +103,14 @@ int jkSession_ResolveAutoBootMode(void);
 // the pose-resume level load.
 int jkSession_StartBootSave(void);
 
+// First player profile on disk (a player/ subdirectory containing its
+// <name>.plr), same enumeration as the player-select menu. Used as the last
+// step of quick-start profile resolution: record-bound profile, else the
+// registry's last-used profile, else this. Returns 1 and fills pOut, or 0
+// when no profile exists at all (callers cancel the direct boot so the
+// title flow forces character creation).
+int jkSession_FindAnyProfile(char* pOut, int outSize);
+
 // Frontend savestate bridge (devdocs/09): a libretro "savestate" here is the
 // engine's own savegame captured to / restored from hidden scratch files in
 // the profile dir ('~'-less display names keep them out of the Load Game

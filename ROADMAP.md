@@ -157,6 +157,22 @@ the following frames. All verified in RetroArch via UDP commands:
 - [x] Regressions checked: session resume still writes `_JKSESSION_JK1.jks`
       at quit; `resume` boot follows the last savestate load by design.
 
+## Boot default + profile resolution (owner feedback 2026-08-20) — DONE
+
+- [x] `openjkdf2_boot` defaults to `episode` — loading content goes straight
+      in-game; intro/menu click-through is opt-in. (Verified: no options
+      file → direct boot into the level.)
+- [x] Quick-start profile chain: record-bound profile (resume) → registry's
+      last-used (if its .plr exists) → first profile on disk
+      (`jkSession_FindAnyProfile`) → CANCEL the autostart so the title flow
+      forces the character-creation dialog (uncancellable with no profiles;
+      screenshot-verified it lands directly on New Player). Profiles must
+      exist for in-game option changes to persist.
+- [x] `jkGui_Shutdown` no longer persists an empty profile name — an
+      unattended title visit used to wipe the registry's last-used profile
+      and silently degrade every save feature on later boots. (Verified:
+      registry self-repairs to the loaded profile on quit.)
+
 ## M1 — playable v1 (finish line for "it's a real core")
 
 ### Hide/neutralize features that can't work under a frontend
