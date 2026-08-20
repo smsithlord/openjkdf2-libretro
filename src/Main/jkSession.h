@@ -91,6 +91,18 @@ void jkSession_ArmBoot(void);
 // filter -- the caller cancels the autostart and the title flow runs instead.
 int jkSession_ResolveAutoBootMode(void);
 
+// Full-state SP resume (devdocs/08): when the armed boot is RESUME with a
+// singleplayer record and the profile holds a matching per-episode
+// _JKSESSION_<stem>.jks (written by SaveCurrent wherever a valid SP pose is
+// captured), queue the engine's own no-world savegame load -- the Load Game
+// menu's cold path (jkMain_sub_4034D0 -> JK_GAMEMODE_UNK -> gameMode 1) --
+// and suppress the pose teleport (the save's own position wins). Called from
+// Main_StartupDedicated's SP branch, after the profile is created. Returns 1
+// when the savegame load was queued -- the caller then skips the level
+// loader. Returns 0 (missing/unreadable/stale save) -- caller falls back to
+// the pose-resume level load.
+int jkSession_StartBootSave(void);
+
 #ifdef __cplusplus
 }
 #endif

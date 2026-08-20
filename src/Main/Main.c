@@ -301,6 +301,16 @@ int Main_StartupDedicated(int bFullyDedicated)
         }
     }
     else {
+#ifdef LIBRETRO_BUILD
+        // Full-state SP resume (devdocs/08): when the session record has a
+        // matching _JKSESSION_ savegame, boot restores that instead of
+        // loading the level -- the save carries world state AND position.
+        // Falls through to the pose-resume level load when there is none.
+        if (jkSession_StartBootSave())
+        {
+            return 1;
+        }
+#endif
         // Libretro: with an empty map (direct boot "from the top"),
         // jkMain_LoadLevelSingleplayer resolves the episode's first level
         // entry itself. Starting via the episode-sequence machinery

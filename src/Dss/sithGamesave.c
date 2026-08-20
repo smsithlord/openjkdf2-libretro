@@ -389,6 +389,17 @@ skip_free_things:
 skip_dss:
     sithTime_SetGameTime(curMs);
     sithCamera_SetCurrentCamera(sithCamera_g_pCurCamera);
+#ifdef LIBRETRO_BUILD
+    // The no-world load flow (jkMain_sub_4034D0 / gameMode 1) parks the save
+    // FILENAME in the level-name global to get here; now that the world is
+    // the save's map, put the real map name back so downstream consumers
+    // (the session record above all) never mistake the filename for a map.
+    if (sithWorld_g_pCurrentWorld && sithWorld_g_pCurrentWorld->map_jkl_fname[0])
+    {
+        _strncpy(jkMain_aLevelJklFname, sithWorld_g_pCurrentWorld->map_jkl_fname, 0x7Fu);
+        jkMain_aLevelJklFname[127] = 0;
+    }
+#endif
     return 1;
 
 load_fail:

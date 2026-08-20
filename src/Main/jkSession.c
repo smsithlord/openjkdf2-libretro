@@ -18,6 +18,10 @@
 #include "Primitives/rdMatrix.h"
 #include "Primitives/rdVector.h"
 #include "Gui/jkGUINetHost.h"
+#include "Gui/jkGUITitle.h"
+#include "Dss/sithGamesave.h"
+#include "General/stdConffile.h"
+#include "jk.h"
 
 #include <string.h>
 
@@ -77,6 +81,24 @@ static jkSessionMode jkSession_ModeFromStr(const char* s)
     return SESSION_MODE_NONE;
 }
 
+// "_JKSESSION_<STEM>.jks" -- the per-episode full-state session save
+// (devdocs/08). The stem comes from a GOB filename (or the record's episode
+// field), so sanitize: uppercase, keep only [A-Z0-9_-], stop at the extension.
+static void jkSession_SessionSaveFname(char* pOut, int outSize, const char* pEpisode)
+{
+    char stem[32];
+    int j = 0;
+    for (const char* p = pEpisode; *p && *p != '.' && j < (int)sizeof(stem) - 1; p++)
+    {
+        char c = *p;
+        if (c >= 'a' && c <= 'z') c -= 32;
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-')
+            stem[j++] = c;
+    }
+    stem[j] = 0;
+    stdString_snprintf(pOut, outSize, "_JKSESSION_%s.jks", j ? stem : "EPISODE");
+}
+
 // Case-insensitive compare of episode GOB names ignoring any extension
 // ("JK1" == "jk1.gob").
 static int jkSession_EpisodeStemEquals(const char* a, const char* b)
@@ -101,6 +123,14 @@ void jkSession_SaveCurrent(void)
     // a useless one.
     if (!jkRes_episodeGobName[0] || !jkMain_aLevelJklFname[0])
         return;
+
+    // The map to record: prefer the live world's own name. The level-name
+    // global is a scratch buffer for the gui state machine -- the savegame
+    // flows (jkMain_sub_4034D0, gameMode 1) park the save's FILENAME in it,
+    // which must never become a record's map_jkl.
+    const char* pMapJkl = (sithWorld_g_pCurrentWorld && sithWorld_g_pCurrentWorld->map_jkl_fname[0])
+        ? sithWorld_g_pCurrentWorld->map_jkl_fname
+        : jkMain_aLevelJklFname;
 
     // Position snapshot -- only when the local player thing is alive and the
     // world is available so we can compute the sector index.
@@ -148,7 +178,7 @@ void jkSession_SaveCurrent(void)
         stdJSON_GetString(fpath, "map_jkl",     oldMap,     sizeof(oldMap),     "");
         if (stdJSON_GetBool(fpath, "has_position", 0)
             && jkSession_EpisodeStemEquals(oldEpisode, jkRes_episodeGobName)
-            && !__strcmpi(oldMap, jkMain_aLevelJklFname))
+            && !__strcmpi(oldMap, pMapJkl))
         {
             return;
         }
@@ -166,7 +196,7 @@ void jkSession_SaveCurrent(void)
     stdJSON_SaveInt  (fpath, "version",           JKSESSION_VERSION);
     stdJSON_SetString(fpath, "mode",              jkSession_ModeStr(mode));
     stdJSON_SetString(fpath, "episode_gob",       jkRes_episodeGobName);
-    stdJSON_SetString(fpath, "map_jkl",           jkMain_aLevelJklFname);
+    stdJSON_SetString(fpath, "map_jkl",           (char*)pMapJkl);
     stdJSON_SetString(fpath, "player_short_name", shortName);
     stdJSON_SaveInt  (fpath, "force_rank",        0); // reserved; profile restore carries rank via .plr
 
@@ -210,6 +240,34 @@ void jkSession_SaveCurrent(void)
         stdJSON_SaveInt   (fpath, "mp_score_limit",     jkGuiNetHost_scoreLimit);
         stdJSON_SaveInt   (fpath, "mp_time_limit",      jkGuiNetHost_timeLimit);
         stdJSON_SaveInt   (fpath, "mp_tick_rate",       jkGuiNetHost_tickRate);
+    }
+
+    // Full-state session save (devdocs/08): at every point that just captured
+    // a valid SP pose, also write the engine-native savegame the RESUME boot
+    // restores from -- same world-state snapshot as a quicksave. MP stays
+    // pose-only (it has no savegame system), and sithGamesave_Save needs a
+    // live player, which bPlayerValid guarantees (the boot-time SaveCurrent
+    // no-ops never reach here). Skipped when the engine already has a
+    // save/load in flight so that operation is never clobbered.
+    if (bPlayerValid && mode == SESSION_MODE_SP && !sithNet_isMulti
+        && sithGamesave_state == SITH_GS_NONE)
+    {
+        char saveFname[64];
+        char16_t saveName[256];
+        jkSession_SessionSaveFname(saveFname, sizeof(saveFname), jkRes_episodeGobName);
+        // Same "<level>~<label>" shape as the quicksave: the Load Game list
+        // only shows entries containing '~' and displays the label part.
+        jk_snwprintf(saveName, 256, u"%s~%s",
+                     jkGuiTitle_quicksave_related_func1(&jkCog_strings, pWorld->map_jkl_fname),
+                     u"Auto-Resume");
+        // Save only arms SITH_GS_SAVE; every write point here is past the
+        // last sithUpdate tick, so flush it now (the save menu's own
+        // Save+Process precedent).
+        if (sithGamesave_Save(saveFname, 1, 0, saveName))
+        {
+            sithGamesave_Process();
+            stdPlatform_Printf("jkSession: session save written (%s)\n", saveFname);
+        }
     }
 }
 
@@ -480,4 +538,56 @@ int jkSession_ResolveAutoBootMode(void)
     stdPlatform_Printf("jkSession: direct boot into episode '%s' (TYPE 0x%x -> %s)\n",
                        Main_strEpisode, type, bSp ? "singleplayer" : "multiplayer (local host)");
     return 1;
+}
+
+int jkSession_StartBootSave(void)
+{
+    if (!jkSession_bResumed
+        || jkSession_currentMode != SESSION_MODE_SP
+        || jkSession_bootMode != JKSESSION_BOOT_RESUME)
+        return 0;
+
+    char saveFname[64];
+    char fpath[128];
+    jkSession_SessionSaveFname(saveFname, sizeof(saveFname), Main_strEpisode);
+    sithGamesave_GetProfilePath(fpath, sizeof(fpath), saveFname);
+
+    if (!stdConffile_OpenReadBytesBypass(fpath))
+    {
+        stdPlatform_Printf("jkSession: no session save (%s) - pose resume\n", fpath);
+        return 0;
+    }
+    static sithGamesave_Header header; // ~1.7 KB; keep it off the boot stack
+    int bRead = stdConffile_Read(&header, sizeof(sithGamesave_Header));
+    stdConffile_Close();
+
+    if (!bRead
+        || (header.version != 6 && !(Main_bMotsCompat && header.version == 0x7D6)))
+    {
+        stdPlatform_Printf("jkSession: session save %s is unreadable (version %d) - pose resume\n",
+                           fpath, bRead ? header.version : -1);
+        return 0;
+    }
+
+    // The pose record is ground truth for WHERE the user last played. A
+    // session save for some other map is stale -- it predates a later exit
+    // that had no valid pose to co-write it (e.g. a fresh playthrough that
+    // ended in a death on an earlier level) -- so don't yank the player back.
+    if (__strcmpi(header.jklName, Main_strMap))
+    {
+        stdPlatform_Printf("jkSession: session save is for map '%s' but the last session ended on '%s' - pose resume\n",
+                           header.jklName, Main_strMap);
+        return 0;
+    }
+
+    // Queue the engine's own "load a save with no world" flow -- identical to
+    // the Load Game menu's no-world branch: JK_GAMEMODE_UNK mounts the
+    // header's episode GOB, then gameMode 1 has jkMain_GameplayShow run
+    // sithGamesave_Restore, which loads the map and replays the world state.
+    // The save's own position is the resume position: the pose teleport must
+    // not fire on top of it.
+    jkSession_bPendingPosition = 0;
+    stdPlatform_Printf("jkSession: full-state resume from %s (episode '%s', map '%s')\n",
+                       fpath, header.episodeName, header.jklName);
+    return jkMain_sub_4034D0(header.episodeName, saveFname, header.jklName, header.saveName);
 }
