@@ -257,14 +257,13 @@ Registered via `RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2` at `retro_set_environment
 | `openjkdf2_resolution` | 640x480 … 1920x1440 | 640x480 | `Window_xSize/ySize` + `SET_GEOMETRY` (M3) |
 | `openjkdf2_autostart_episode` | disabled/enabled | disabled | derive episode from ROM filename → `-episode <name> -autostart` on the synthesized cmdline (M3) |
 | `openjkdf2_hires_assets` | enabled/disabled | enabled | investigate at M3: `Res1hi.gob` loads by wildcard; "disabled" would skip it in the resource scan |
-| `openjkdf2_boot` | menu/episode/resume | menu | **implemented** — `jkSession_ConfigureBoot`/`ArmBoot` (src/Main/jkSession.c, ported from AAOpenJKDF2 per devdocs/06): `episode` autostarts the ROM's episode at its first level entry; `resume` re-enters the last session's map and exact pose from `<basefolder>/openjkdf2_lastsession.json`, falling back to `episode` then `menu` |
+| `openjkdf2_boot` | intro/menu/episode/level/resume | intro | **implemented** — `jkSession_ConfigureBoot`/`ArmBoot` (src/Main/jkSession.c, ported from AAOpenJKDF2 per devdocs/06): `intro` is the stock flow (movie, then title); `menu` skips the movie (every non-intro mode does); `episode` autostarts the ROM's episode at its STARTING level (resolved by walking the episode.jk decision path — gotoA links from SEQ entry 0 — past cutscene entries; episodes have no explicit start field); `level` re-enters the last session's map at its normal start; `resume` re-enters it at the exact saved pose. The continue modes read `<basefolder>/openjkdf2_lastsession.json` and fall back to `episode` then the title |
 | `openjkdf2_boot_game_type` | all/singleplayer/multiplayer | all | **implemented** — direct-boot episode-type FILTER only: the game mode always follows the episode's own `episode.jk` TYPE (`jkSession_ResolveAutoBootMode` probes it at `Main_StartupDedicated`; SP episodes boot SP, any MP type solo-hosts a local session — works against `Networking/None`); episodes outside the selection boot to the game menu |
 
 Not options (fixed behavior): resume always restores the exact position (a
 session record without a position resumes at the map's default spawn; full
 world state remains the native saves' job), and the core-drawn menu pointer
 always auto-hides (appears on pointer activity, hides after ~3 s idle).
-| `openjkdf2_skip_intro` | disabled/enabled | disabled | **implemented** — menu boot skips the pre-title intro movie (engine's own disable-cutscenes skip in `jkSmack_SmackPlay`, without touching the profile setting) |
 
 ## Filesystem & saves
 

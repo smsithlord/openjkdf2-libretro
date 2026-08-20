@@ -133,9 +133,8 @@ typedef struct core_state_t
     int cursor_idle_frames;
 
     /* Boot/resume core options (consumed at engine boot via jkSession). */
-    int boot_mode;           /* JKSESSION_BOOT_* */
+    int boot_mode;           /* JKSESSION_BOOT_* (INTRO plays the stock movie; every other mode skips it) */
     int direct_boot_filter;  /* JKSESSION_DIRECT_* — which episode types direct-boot */
-    bool skip_intro;         /* menu boot skips the pre-title intro video */
 
     int16_t audio_out[CORE_AUDIO_FRAMES * 2];
 } core_state_t;
@@ -897,7 +896,7 @@ static bool core_boot_engine(void)
      * jkSession_ArmBoot hook inside Main_Startup, after cmdline parsing. */
     core_refresh_options();
     jkSession_ConfigureBoot(g_core.boot_mode, g_core.direct_boot_filter,
-                            g_core.episode_name, g_core.skip_intro ? 1 : 0);
+                            g_core.episode_name);
 
     int result = Main_Startup(g_core.cmdline);
     if (!result)
@@ -1033,11 +1032,15 @@ static void core_refresh_options(void)
 
     var.key = "openjkdf2_boot";
     var.value = NULL;
-    g_core.boot_mode = JKSESSION_BOOT_MENU;
+    g_core.boot_mode = JKSESSION_BOOT_INTRO;
     if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
     {
-        if (!strcmp(var.value, "episode"))
+        if (!strcmp(var.value, "menu"))
+            g_core.boot_mode = JKSESSION_BOOT_MENU;
+        else if (!strcmp(var.value, "episode"))
             g_core.boot_mode = JKSESSION_BOOT_DIRECT;
+        else if (!strcmp(var.value, "level"))
+            g_core.boot_mode = JKSESSION_BOOT_LEVEL;
         else if (!strcmp(var.value, "resume"))
             g_core.boot_mode = JKSESSION_BOOT_RESUME;
     }
@@ -1055,12 +1058,6 @@ static void core_refresh_options(void)
             g_core.direct_boot_filter = JKSESSION_DIRECT_MP_ONLY;
     }
 
-    var.key = "openjkdf2_skip_intro";
-    var.value = NULL;
-    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-        g_core.skip_intro = strcmp(var.value, "enabled") == 0;
-    else
-        g_core.skip_intro = false;
 }
 
 RETRO_API void retro_set_environment(retro_environment_t cb)
@@ -1077,14 +1074,18 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
             {
                 "openjkdf2_boot",
                 "Boot mode (restart content to apply)",
-                "How loading content starts the game. 'Game main menu' is the stock title flow. "
-                "'Straight into episode' skips the menus and starts the loaded episode from its beginning. "
-                "'Resume last session' continues on the map you last played (falling back to the episode start, then the menu).",
-                { { "menu", "Game main menu" },
+                "How loading content starts the game. 'Intro video' is the stock flow; 'Game main menu' skips the movie. "
+                "'Straight into episode' always starts the loaded episode over from its first level. "
+                "'Continue from last level' starts the level you last played at its normal start point. "
+                "'Resume last session' puts you back at the exact spot you left. "
+                "The continue/resume modes fall back to the episode start, then the menu, when there is no matching session.",
+                { { "intro", "Intro video" },
+                  { "menu", "Game main menu" },
                   { "episode", "Straight into episode" },
-                  { "resume", "Resume last session" },
+                  { "level", "Continue from last level" },
+                  { "resume", "Resume last session (exact spot)" },
                   { NULL, NULL } },
-                "menu",
+                "intro",
             },
             {
                 "openjkdf2_boot_game_type",
@@ -1098,13 +1099,6 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                   { NULL, NULL } },
                 "all",
             },
-            {
-                "openjkdf2_skip_intro",
-                "Skip intro videos",
-                "Skip the pre-title intro movie when booting to the game's main menu (same effect as the in-game 'disable cutscenes' setting, without changing the player profile).",
-                { { "disabled", NULL }, { "enabled", NULL }, { NULL, NULL } },
-                "disabled",
-            },
             { NULL, NULL, NULL, { { NULL, NULL } }, NULL },
         };
         unsigned version = 0;
@@ -1115,9 +1109,8 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
         else
         {
             static const struct retro_variable vars[] = {
-                { "openjkdf2_boot", "Boot mode; menu|episode|resume" },
+                { "openjkdf2_boot", "Boot mode; intro|menu|episode|level|resume" },
                 { "openjkdf2_boot_game_type", "Direct boot episode types; all|singleplayer|multiplayer" },
-                { "openjkdf2_skip_intro", "Skip intro videos; disabled|enabled" },
                 { NULL, NULL },
             };
             cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);

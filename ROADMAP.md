@@ -59,14 +59,16 @@ Shipped in `25860a97` + `543fe5a2`, all verified in RetroArch:
 - [x] `jkSession` (port of the fork's aaSession, save warts fixed): last-session
       record in `<basefolder>/openjkdf2_lastsession.json`, captured at gameplay
       exit / level switches / the core's engine quiesce.
-- [x] Core options: `openjkdf2_boot` (menu / straight-into-episode / resume-last-
-      session), `openjkdf2_boot_game_type` (episode-type FILTER for direct boot —
-      the SP/MP mode itself always follows the episode's own TYPE, probed from
-      its episode.jk), `openjkdf2_skip_intro`. Direct boot resolves the episode's
-      first level entry itself; resume always restores exact position+look via
-      the engine's canonical teleport with never-into-the-void validation, and a
-      ROM-mismatch guard falls back to direct boot. Cursor auto-hide and
-      position-restore are fixed behaviors, not options.
+- [x] Core options: `openjkdf2_boot` (intro [default, stock flow] / menu [movie
+      skipped] / straight-into-episode / continue-from-last-level /
+      resume-exact-spot) and `openjkdf2_boot_game_type` (episode-type FILTER for
+      direct boot — the SP/MP mode itself always follows the episode's own TYPE,
+      probed from its episode.jk). Direct boot resolves the episode's STARTING
+      level by walking the episode.jk decision path; resume always restores
+      exact position+look via the engine's canonical teleport with
+      never-into-the-void validation, and a ROM-mismatch guard falls back to
+      direct boot. Intro-skip, cursor auto-hide, and position-restore are folded
+      into the modes / fixed behaviors, not separate options.
 - [x] Session resume is map+pose only by design — world state (kills, pickups)
       stays the job of native saves; the two compose (resume in, then Load Game).
 - [x] devdocs/07 cherry-picks (`b44e6c98`): cog no-change-rebuild fix (~90 s →

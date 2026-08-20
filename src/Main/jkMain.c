@@ -987,22 +987,57 @@ int jkMain_LoadFile(char *a1)
 }
 
 #ifdef LIBRETRO_BUILD
-// Libretro: first LEVEL entry (type 0) of the just-loaded episode, for direct
-// boots that don't name a map; skips the episode's video entries.
+// Libretro: the episode's STARTING level, for direct boots that don't name a
+// map. Episodes have no explicit start field -- the engine begins at SEQ
+// entry 0 and follows the gotoA links (jkEpisode_GetNextEntryInDecisionPath
+// semantics: goto values reference entry lineNums), so walk that chain past
+// video/cutscene entries to the first LEVEL (type 0) entry. Falls back to
+// the first type-0 entry in list order if the chain is broken or cyclic.
 static char* jkMain_FirstLevelEntryName(void)
 {
-    if (!jkEpisode_mLoad.paEntries || jkEpisode_mLoad.numSeq <= 0)
+    jkEpisodeEntry* paEnts = jkEpisode_mLoad.paEntries;
+    int numSeq = jkEpisode_mLoad.numSeq;
+    if (!paEnts || numSeq <= 0)
         return "";
-    for (int i = 0; i < jkEpisode_mLoad.numSeq; i++)
+
+    int idx = 0;
+    for (int steps = 0; steps < numSeq; steps++)
     {
-        if (jkEpisode_mLoad.paEntries[i].type == 0)
+        if (paEnts[idx].type == 0)
         {
-            stdPlatform_Printf("jkMain: empty map for autostart; using episode's first level entry '%s'\n",
-                               jkEpisode_mLoad.paEntries[i].fileName);
-            return jkEpisode_mLoad.paEntries[i].fileName;
+            stdPlatform_Printf("jkMain: empty map for autostart; episode's starting level is '%s' (SEQ line %d)\n",
+                               paEnts[idx].fileName, paEnts[idx].lineNum);
+            return paEnts[idx].fileName;
+        }
+        int gotoA = paEnts[idx].gotoA;
+        if (gotoA == -1)
+            break;
+        int next = -1;
+        for (int i = 0; i < numSeq; i++)
+        {
+            if (paEnts[i].lineNum == gotoA)
+            {
+                next = i;
+                break;
+            }
+        }
+        if (next < 0)
+            break; // dangling goto -- bad episode file; fall back below
+        idx = next;
+    }
+
+    // Broken/cyclic chain or no level on the path: first level entry in list
+    // order, else entry 0.
+    for (int i = 0; i < numSeq; i++)
+    {
+        if (paEnts[i].type == 0)
+        {
+            stdPlatform_Printf("jkMain: episode decision path has no reachable level; using first listed level '%s'\n",
+                               paEnts[i].fileName);
+            return paEnts[i].fileName;
         }
     }
-    return jkEpisode_mLoad.paEntries[0].fileName;
+    return paEnts[0].fileName;
 }
 #endif
 

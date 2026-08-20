@@ -380,11 +380,13 @@ void jkSession_ApplyPendingPosition(void)
 }
 
 void jkSession_ConfigureBoot(int bootMode, int directFilter,
-                             const char* pRomEpisode, int bSkipIntroVideo)
+                             const char* pRomEpisode)
 {
     jkSession_bootMode = bootMode;
     jkSession_directFilter = directFilter;
-    jkSession_bSkipIntroVideo = bSkipIntroVideo;
+    // Every mode except the stock INTRO flow skips the pre-title movie --
+    // including the autostart modes' fallback-to-menu paths.
+    jkSession_bSkipIntroVideo = (bootMode != JKSESSION_BOOT_INTRO);
     memset(jkSession_romEpisode, 0, sizeof(jkSession_romEpisode));
     if (pRomEpisode)
         stdString_SafeStrCopy(jkSession_romEpisode, pRomEpisode, sizeof(jkSession_romEpisode));
@@ -400,16 +402,25 @@ void jkSession_ConfigureBoot(int bootMode, int directFilter,
 
 void jkSession_ArmBoot(void)
 {
-    if (jkSession_bootMode == JKSESSION_BOOT_MENU)
-        return;
+    if (jkSession_bootMode == JKSESSION_BOOT_INTRO || jkSession_bootMode == JKSESSION_BOOT_MENU)
+        return; // title flow (with or without the intro movie); no autostart
 
     int resumed = 0;
-    if (jkSession_bootMode == JKSESSION_BOOT_RESUME)
+    if (jkSession_bootMode == JKSESSION_BOOT_RESUME || jkSession_bootMode == JKSESSION_BOOT_LEVEL)
     {
         resumed = jkSession_LoadAndApply(jkSession_romEpisode);
-        if (resumed)
+        if (resumed && jkSession_bootMode == JKSESSION_BOOT_LEVEL)
+        {
+            // Continue on the last level, but from its normal start point.
+            jkSession_bPendingPosition = 0;
+            stdPlatform_Printf("jkSession: continuing on last level (episode '%s', map '%s', default spawn)\n",
+                               Main_strEpisode, Main_strMap);
+        }
+        else if (resumed)
+        {
             stdPlatform_Printf("jkSession: resuming last session (episode '%s', map '%s')\n",
                                Main_strEpisode, Main_strMap);
+        }
     }
 
     if (!resumed)

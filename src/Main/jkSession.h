@@ -25,9 +25,11 @@ typedef enum jkSessionMode
 // via jkSession_ConfigureBoot before Main_Startup runs.
 typedef enum jkSessionBoot
 {
-    JKSESSION_BOOT_MENU   = 0, // stock title flow
-    JKSESSION_BOOT_DIRECT = 1, // autostart the ROM's episode from the top
-    JKSESSION_BOOT_RESUME = 2, // resume last session; falls back to DIRECT
+    JKSESSION_BOOT_INTRO  = 0, // stock flow: intro video, then the title menu
+    JKSESSION_BOOT_MENU   = 1, // title menu directly (intro video skipped)
+    JKSESSION_BOOT_DIRECT = 2, // autostart the ROM's episode from its start
+    JKSESSION_BOOT_LEVEL  = 3, // last session's level at its normal start; falls back to DIRECT
+    JKSESSION_BOOT_RESUME = 4, // last session's level at the exact spot; falls back to DIRECT
 } jkSessionBoot;
 
 // Which episode types a DIRECT boot applies to. The game mode itself
@@ -45,7 +47,9 @@ extern jkSessionMode jkSession_currentMode;
 extern int           jkSession_pendingMpHosting;
 extern int           jkSession_bResumed;
 extern char          jkSession_resumeShortName[32];
-extern int           jkSession_bSkipIntroVideo; /* consumed by jkSmack_SmackPlay */
+extern int           jkSession_bSkipIntroVideo; /* consumed by jkSmack_SmackPlay;
+                                                   derived: every boot mode except
+                                                   INTRO skips the intro movie */
 
 // Writes openjkdf2_lastsession.json based on current globals
 // (jkRes_episodeGobName, jkMain_aLevelJklFname, jkPlayer_playerShortName,
@@ -73,7 +77,7 @@ void jkSession_ApplyPendingPosition(void);
 
 // Core-facing boot configuration (called before the engine boots).
 void jkSession_ConfigureBoot(int bootMode, int directFilter,
-                             const char* pRomEpisode, int bSkipIntroVideo);
+                             const char* pRomEpisode);
 
 // Applies the configured boot mode; called from Main_Startup right after
 // Main_ParseCmdLine (LIBRETRO_BUILD hook). MENU is a no-op.
