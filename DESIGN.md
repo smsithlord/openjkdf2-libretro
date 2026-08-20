@@ -184,12 +184,29 @@ the engine opens **no real audio device** under `LIBRETRO_BUILD`:
    `alcLoopbackOpenDeviceSOFT(NULL)` (OpenAL Soft is built in-tree, so the
    extension is always present) with context attrs
    `ALC_FORMAT_CHANNELS_SOFT=ALC_STEREO_SOFT`, `ALC_FORMAT_TYPE_SOFT=ALC_SHORT_SOFT`,
-   `ALC_FREQUENCY=48000`. Every `retro_run` pulls exactly 800 frames
-   (48000/60, integer — no drift) via `libretro_stdSound_RenderAudio` →
-   `alcRenderSamplesSOFT` and submits them as the single `audio_batch_cb`.
+   `ALC_FREQUENCY=48000`. Every `retro_run` pulls a **wall-clock-sized** slice
+   via `libretro_stdSound_RenderAudio` → `alcRenderSamplesSOFT` and submits it
+   as the single `audio_batch_cb`.
    Loopback devices spawn no mixer threads; the engine fiber shares the
    frontend thread, so the render is race-free by construction. A real device
    remains as a loud-logged fallback if the extension is ever missing.
+
+   **Pacing (`core_audio_frames_due`).** The loopback device has no clock of
+   its own — it renders exactly the N you ask for — so *the frame count we
+   request is the playback rate*. A fixed 800 therefore only sounds right if
+   the frontend calls `retro_run` at exactly 60 Hz; at 70 Hz it produces
+   56000 frames per real second, the frontend drops the surplus, and the mix
+   stutters while racing ahead. Instead the core measures real elapsed time
+   between `retro_run` **entries** (QPC/`CLOCK_MONOTONIC`, not the engine's
+   32-bit ms clock) and renders `dt × 48000` frames, carrying the fraction
+   across calls. `dt` and the accumulated backlog are both capped at 50 ms /
+   2400 frames: a stall (level load, pause, savestate restore) must never
+   bank catch-up that then drains at max rate, which is the same runaway.
+   Frames shorter than one sample period submit nothing and carry the
+   remainder. Verified under RetroArch fast-forward: at ~850 `retro_run`/s the
+   mean batch falls 800 → 56 while the effective rate stays 48000 Hz. A
+   `RETRO_LOG_DEBUG` line every 600 calls reports calls/frames/rate/mean batch
+   — the instrument for this whole class of bug.
 2. **Music** (`stdMci.c`, SDL2_RENDER branch): the SDL3_mixer mixer becomes a
    device-less `MIX_CreateMixer()` (48kHz S16 stereo), with
    `SDL_HINT_AUDIO_DRIVER=dummy` set before `MIX_Init` so SDL's WASAPI backend
@@ -201,13 +218,31 @@ the engine opens **no real audio device** under `LIBRETRO_BUILD`:
    ~133 ms depth), which the loopback render folds into the same final mix as
    SFX — one mixer, no manual sample summing. Engine play/stop/volume calls
    land in SDL_mixer track state (`MIX_SetTrackGain` etc.) exactly as before.
+   The stream's chunk size is deliberately independent of the render size
+   above: the pump refills whatever the render freed, so queue depth
+   self-regulates at any pacing. It runs *before* the render, so even a
+   maximum 2400-frame pull (3 buffers) leaves 5 queued.
 3. **SMUSH/cutscene audio** already plays through `stdSound` OpenAL buffers
    ([jkCutscene.c:400](src/Main/jkCutscene.c#L400)) — captured by the loopback
    for free.
 
 Consequences: RetroArch volume/recording apply to everything, pause is
-hard-silent (no `retro_run` → no samples), fast-forward pitches naturally,
-and content unload leaves zero engine audio threads (nothing to pin the DLL).
+hard-silent (no `retro_run` → no samples), and content unload leaves zero
+engine audio threads (nothing to pin the DLL). **Fast-forward no longer
+pitches up** — audio stays at natural pitch and rate. That is a deliberate
+trade for cadence-independence: pitching was a side effect of the fixed 800,
+not a designed behavior, and the same side effect is what made the core
+stutter on any frontend whose `retro_run` cadence drifted off 60 Hz.
+
+Fast-forward *does* speed the game up, but that took a separate change — see
+the **virtual clock** ([devdocs/11](devdocs/11-virtual-clock.md)). Stock, the
+engine's frame delta comes from real elapsed wall-clock ms
+([sithTime.c:24](src/Gameplay/sithTime.c#L24) → `stdPlatform_GetTimeMsec`), so
+the deltas over any real second sum to one real second no matter how many
+frames were rendered — running `retro_run` faster just slices that second more
+finely. Under `LIBRETRO_BUILD` that one function now returns a core-owned
+virtual clock advancing at `real_dt × speed`, so audio and game time scale
+together off the same quantity.
 JK1 music note: levels drive music volume dynamically via COG `setmusicvol`
 (silent while exploring, swells in combat) — music being inaudible in a quiet
 area is engine-correct.

@@ -7,6 +7,7 @@
 #include "Devices/sithSound.h"
 #include "Engine/sithKeyFrame.h"
 #include "Dss/sithMulti.h"
+#include "Dss/sithGamesave.h" // Added: sithGamesave_bReplayingMessages (devdocs/10)
 #include "World/sithThing.h"
 #include "World/sithSector.h"
 #include "World/sithActor.h"
@@ -976,7 +977,13 @@ int sithDSSThing_ProcessFullDescription(SithMessage *pMsg)
 
     NETMSG_IN_START(pMsg);
 
-    if ( sithNet_isMulti && (g_submodeFlags & 8) == 0 )
+    // Added (devdocs/10): the guard rejects unsolicited full-thing descriptions
+    // outside the join-sync window, which is right for NETWORK traffic. A
+    // savegame replay feeds the same messages from a file, and rejecting them
+    // there silently drops every thing in the save (and cascades into
+    // DSS_SYNCPUPPET, whose things then don't exist). Only reachable in MP
+    // because stock JK refuses to save there at all.
+    if ( sithNet_isMulti && (g_submodeFlags & 8) == 0 && !sithGamesave_bReplayingMessages )
         return 0;
 
     idx = NETMSG_POPS16();

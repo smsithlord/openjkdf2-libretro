@@ -47,6 +47,14 @@ static int sithGamesave_bSuppressVmuFlush = 0;
 int sithGamesave_bForceSlim = 0;
 #endif
 
+// Added (devdocs/10): set only while sithGamesave_RestoreFile replays the
+// save's DSS message stream. Those messages come from a FILE, not from the
+// network, so the handlers' "reject unsolicited sync traffic mid-session"
+// guards must not apply -- see sithDSSThing_ProcessFullDescription. Scoped
+// tightly so nothing else can observe it. Not Dreamcast-gated: the replay
+// loop below is common to every platform.
+int sithGamesave_bReplayingMessages = 0;
+
 // Added: the autosave slot is normally named per-map (_JKAUTO_<map>.jks). On a
 // Dreamcast without an SD card the writable store (VMU/RAM) can't hold one per
 // level, so every autosave collapses onto a single fixed name -- the real map is
@@ -295,6 +303,7 @@ skip_free_things:
     // Apparently this works by interpreting a bunch of netMsg packets from the
     // savefile? Funky.
 //#ifndef LINUX_TMP
+    sithGamesave_bReplayingMessages = 1; // Added: file replay, not net traffic
     while (1)
     {
         // Added: Determinism
@@ -347,6 +356,7 @@ skip_free_things:
 #endif
         }
     }
+    sithGamesave_bReplayingMessages = 0;
 //#endif
 
     if (bIsOutdatedSave)
@@ -403,6 +413,7 @@ skip_dss:
     return 1;
 
 load_fail:
+    sithGamesave_bReplayingMessages = 0; // Added: every abort path leaves it clear
     stdConffile_Close();
     sithThing_LoadPostProcess();
     sithClose();
@@ -521,7 +532,7 @@ int sithGamesave_Save(char *saveFname, int a2, int a3, char16_t *saveName)
     char PathName[128]; // [esp+2Ch] [ebp-280h] BYREF
     char16_t v13[256]; // [esp+ACh] [ebp-200h] BYREF
 
-    if ( (g_submodeFlags & 1) != 0 )
+    if ( SITH_MP_SAVES_BLOCKED() ) // Added: solo MP sessions may save (devdocs/10)
         return 0;
     if ( (sithPlayer_g_pLocalPlayerThing->flags & SITH_TF_DEAD) != 0 )
         return 0;

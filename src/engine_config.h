@@ -43,6 +43,22 @@
 #define MICROSECOND_TIME
 #endif
 
+// Multiplayer saves (devdocs/10). Stock JK blocks the whole savegame system
+// while the multiplayer submode bit is set. Under libretro a "multiplayer"
+// session is usually a LOCAL session with no peers -- a level-rules mode, not
+// a network session -- so the gate is protecting nothing. The predicate below
+// swaps "is a multiplayer session" for "is netplay actually enabled".
+//
+// NEVER clear g_submodeFlags bit 0 to achieve this: it also selects the
+// MP-vs-SP thing-spawn mask (sithThing.c, 0x8000 vs 0x10000), so clearing it
+// would change which entities the level spawns.
+#ifdef LIBRETRO_BUILD
+extern int jkSession_bMpSavesEnabled; // set from core options; 0 when netplay is on
+#define SITH_MP_SAVES_BLOCKED() (((g_submodeFlags & 1) != 0) && !jkSession_bMpSavesEnabled)
+#else
+#define SITH_MP_SAVES_BLOCKED() ((g_submodeFlags & 1) != 0)
+#endif
+
 // Original game will speed up if framerate is over 100?
 #ifndef QOL_IMPROVEMENTS
 #define SITHTIME_MINDELTA (10)

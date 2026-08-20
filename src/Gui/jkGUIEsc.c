@@ -81,8 +81,11 @@ void jkGuiEsc_Show()
 
     if ( sithNet_isMulti )
     {
-        jkGuiEsc_aElements[JKGUIESC_ELMT_LOAD].bIsVisible = 0;
-        jkGuiEsc_aElements[JKGUIESC_ELMT_SAVE].bIsVisible = 0;
+        // Added: a solo MP session has a working savegame system (devdocs/10),
+        // so show Load/Save there; with netplay on this stays stock-hidden.
+        int bMpSaves = !SITH_MP_SAVES_BLOCKED();
+        jkGuiEsc_aElements[JKGUIESC_ELMT_LOAD].bIsVisible = bMpSaves;
+        jkGuiEsc_aElements[JKGUIESC_ELMT_SAVE].bIsVisible = bMpSaves;
         jkGuiEsc_aElements[JKGUIESC_ELMT_OBJECTIVES].bIsVisible = !!(sithMulti_multiModeFlags & MULTIMODEFLAG_COOP); // Added: co-op
         jkGuiEsc_aElements[JKGUIESC_ELMT_RESTART].bIsVisible = 0;
     }

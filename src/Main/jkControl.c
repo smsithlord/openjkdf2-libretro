@@ -69,7 +69,7 @@ int jkControl_HandleHudKeys(SithThing *player, flex_t b)
                 jkHud_Chat();
         }
 
-        if ( (g_submodeFlags & 1) == 0 )
+        if ( !SITH_MP_SAVES_BLOCKED() ) // Added: quicksave in solo MP (devdocs/10)
         {
             sithControl_GetKey(INPUT_FUNC_GAMESAVE, &v15);
             if (v15 && sithThing_MotsTick(0xe,0,2.0))

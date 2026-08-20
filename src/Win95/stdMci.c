@@ -673,10 +673,16 @@ void libretro_stdMci_Pump(void)
 
     ALint nProcessed = 0;
     alGetSourcei(stdMci_lrSource, AL_BUFFERS_PROCESSED, &nProcessed);
+    alGetError();
     while (nProcessed-- > 0 && stdMci_lrNumFree < STDMCI_LR_NUMBUFS)
     {
         ALuint b = 0;
         alSourceUnqueueBuffers(stdMci_lrSource, 1, &b);
+        // A failed unqueue leaves b == 0. Banking that would put an invalid
+        // buffer name in the free list, and the alBufferData below would then
+        // fail forever -- the stream wedges for the rest of the session.
+        if (alGetError() != AL_NO_ERROR || !b)
+            break;
         stdMci_lrFreeBufs[stdMci_lrNumFree++] = b;
     }
 

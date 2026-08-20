@@ -330,6 +330,17 @@ int Main_StartupDedicated(int bFullyDedicated)
     jkHudInv_InitItems();
 
     if (!Main_bAutostartSp) {
+#ifdef LIBRETRO_BUILD
+        // Full-state MP resume (devdocs/10), mirroring the SP branch below.
+        // Ordering matters: sithMulti_CreatePlayer already ran above, so the
+        // multiplayer session exists and the savegame restores straight into
+        // it. Falls through to the pose-resume level load when there is no
+        // session save, or when multiplayer saves are off.
+        if (jkSession_StartBootSave())
+        {
+            return 1;
+        }
+#endif
         if (jkMain_loadFile2(v34.episodeGobName, v34.mapJklFname))
         {
             return 1;

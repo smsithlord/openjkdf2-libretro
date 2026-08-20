@@ -38,6 +38,7 @@
 #define core_getcwd _getcwd
 #else
 #include <unistd.h>
+#include <time.h> /* clock_gettime, for core_now_seconds */
 #define core_chdir chdir
 #define core_getcwd getcwd
 #endif
@@ -89,7 +90,34 @@ extern void libretro_stdMci_Pump(void); /* stdMci.c: music -> AL stream */
 #define CORE_MAX_HEIGHT   1440
 #define CORE_FPS          60.0
 #define CORE_SAMPLE_RATE  48000.0
-#define CORE_AUDIO_FRAMES 800 /* 48000 / 60 */
+#define CORE_AUDIO_FRAMES 800 /* 48000 / 60 -- nominal only; see core_audio_frames_due */
+
+/* Audio is clocked by wall time, not by frame count. The loopback device has
+ * no clock of its own (alcRenderSamplesSOFT renders exactly the N you ask
+ * for), so the number of frames we render IS the playback rate: at a fixed
+ * 800 a frontend running us at 70Hz produces 56000 frames per real second,
+ * the surplus gets dropped, and the mix stutters while racing ahead. Deriving
+ * N from measured elapsed time emits ~48000 per real second at any cadence.
+ *
+ * The cap is both a batch ceiling and a backlog ceiling: a stall (level load,
+ * frontend pause, savestate restore) must never bank catch-up that then
+ * drains at max rate -- that is the same runaway this exists to prevent. */
+#define CORE_AUDIO_MAX_DT     0.05 /* seconds of real time per retro_run */
+#define CORE_AUDIO_FRAMES_MAX 2400 /* CORE_AUDIO_MAX_DT * CORE_SAMPLE_RATE */
+
+/* Virtual clock (devdocs/11). The engine's frame delta comes from
+ * stdPlatform_GetTimeMsec, so game time is slaved to real time and running
+ * retro_run faster cannot make the game go faster -- it just slices the same
+ * second more finely. Under LIBRETRO_BUILD that function returns the core's
+ * virtual clock instead, which advances by real_dt * speed. Every consumer
+ * (sithTime, jkMain, jkGame, the GUI timers) stays coherent for free.
+ *
+ * CORE_NOMINAL_DT is the scaling ceiling, not a frame cap: scaling may never
+ * make a step COARSER than it would have been at speed 1.0. The natural
+ * real_dt is always allowed through, so a 30fps frontend still runs at 1.0x;
+ * what the ceiling prevents is a frontend that does NOT raise its cadence
+ * getting 4x-sized physics steps. There, speed silently caps instead. */
+#define CORE_NOMINAL_DT (1.0 / CORE_FPS)
 
 /* Cursor wedge: don't draw until the pointer has actually been used, and
  * auto-hide after this many frames without motion/button activity (~3s). */
@@ -137,6 +165,11 @@ typedef struct core_state_t
     int boot_mode;           /* JKSESSION_BOOT_* (INTRO plays the stock movie; every other mode skips it) */
     int direct_boot_filter;  /* JKSESSION_DIRECT_* — which episode types direct-boot */
 
+    /* Netplay interlock + multiplayer saves (devdocs/10). Combined into
+     * jkSession_bMpSavesEnabled, which every engine-side save gate reads. */
+    bool netplay_enabled;
+    bool mp_saves_option;
+
     /* Internal render size (openjkdf2_resolution). Applied at boot and live
      * on change; always <= CORE_MAX_WIDTH/HEIGHT so SET_GEOMETRY never needs
      * an AV-info reinit. */
@@ -149,10 +182,33 @@ typedef struct core_state_t
      * and a quiet moment, or the retry budget runs out. */
     void*    pending_state;
     unsigned pending_state_len;
-    unsigned pending_state_kind; /* CORE_STATE_KIND_* */
+    unsigned pending_state_kind;  /* CORE_STATE_KIND_* */
+    unsigned pending_state_flags; /* CORE_STATE_FLAG_* (MP/SP provenance) */
     int      pending_state_frames;
 
-    int16_t audio_out[CORE_AUDIO_FRAMES * 2];
+    /* Wall-clock audio pacing (see core_audio_frames_due). audio_last_time is
+     * sampled at retro_run ENTRY so the delta includes the frontend's throttle
+     * time -- the cadence we need to track. Zero-init leaves the clock
+     * disarmed, so the first frame emits the nominal batch. */
+    bool   audio_clock_armed;
+    double audio_last_time;
+    double audio_frame_acc; /* fractional frames carried between calls */
+
+    /* Virtual clock (devdocs/11). virtual_ms is what the engine sees as
+     * stdPlatform_GetTimeMsec; kept in double so sub-millisecond slices
+     * (slow-motion at a high frame rate) accumulate instead of truncating to
+     * zero, which is what would otherwise freeze game time outright. */
+    double virtual_ms;
+    double speed_cur;   /* achieved speed after the ceiling, for telemetry */
+    double max_speed;   /* fast-forward cap (core option) */
+    double slow_speed;  /* slow-motion factor (core option) */
+
+    /* Pacing telemetry (DEBUG log only, ~every 600 calls). */
+    double   audio_stat_t0;
+    int64_t  audio_stat_frames;
+    int      audio_stat_calls;
+
+    int16_t audio_out[CORE_AUDIO_FRAMES_MAX * 2];
 } core_state_t;
 
 static core_state_t g_core;
@@ -1109,6 +1165,54 @@ static void core_refresh_options(void)
             g_core.direct_boot_filter = JKSESSION_DIRECT_MP_ONLY;
     }
 
+    /* Netplay interlock + multiplayer saves (devdocs/10). A "multiplayer"
+     * session here is normally a LOCAL one with no peers, so the stock
+     * no-saves-in-MP rule protects nothing. Netplay is the master switch:
+     * with real peers, saves stay stock-gated no matter what the other
+     * option says. Live-applicable -- the predicate is read at each gate. */
+    var.key = "openjkdf2_netplay";
+    var.value = NULL;
+    g_core.netplay_enabled = false;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+        g_core.netplay_enabled = strcmp(var.value, "enabled") == 0;
+
+    var.key = "openjkdf2_multiplayer_saves";
+    var.value = NULL;
+    g_core.mp_saves_option = true;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+        g_core.mp_saves_option = strcmp(var.value, "disabled") != 0;
+
+    /* Game-speed bounds (devdocs/11). The frontend's own fast-forward and
+     * slow-motion hotkeys select WHICH of these applies; these only bound it.
+     * Netplay forces 1.0 regardless (core_current_speed). */
+    var.key = "openjkdf2_max_speed";
+    var.value = NULL;
+    g_core.max_speed = 4.0;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    {
+        double v = atof(var.value);
+        if (v >= 1.0 && v <= 32.0)
+            g_core.max_speed = v;
+    }
+
+    var.key = "openjkdf2_slow_motion";
+    var.value = NULL;
+    g_core.slow_speed = 0.25;
+    if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    {
+        double v = atof(var.value);
+        if (v > 0.0 && v <= 1.0)
+            g_core.slow_speed = v;
+    }
+
+    {
+        int enabled = (g_core.mp_saves_option && !g_core.netplay_enabled) ? 1 : 0;
+        if (enabled != jkSession_bMpSavesEnabled)
+            core_log(RETRO_LOG_INFO, "multiplayer saves %s (option=%d netplay=%d)\n",
+                     enabled ? "enabled" : "disabled",
+                     g_core.mp_saves_option ? 1 : 0, g_core.netplay_enabled ? 1 : 0);
+        jkSession_bMpSavesEnabled = enabled;
+    }
 }
 
 /* Push a resolution change to both sides: the frontend's geometry (viewport
@@ -1216,6 +1320,55 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                   { NULL, NULL } },
                 "all",
             },
+            {
+                "openjkdf2_multiplayer_saves",
+                "Multiplayer saves",
+                "Multiplayer levels in this game are usually played solo, as a local session with no other players. "
+                "The original game disables its entire savegame system in multiplayer, which is only meaningful when "
+                "other players are actually connected. Enabled: multiplayer sessions get the same save, load and "
+                "savestate support as singleplayer. Disabled: the original behavior (savestates fall back to recording "
+                "position and character only). Forced off while Netplay is enabled.",
+                { { "enabled", "Enabled (full saves in multiplayer)" },
+                  { "disabled", "Disabled (original behavior)" },
+                  { NULL, NULL } },
+                "enabled",
+            },
+            {
+                "openjkdf2_netplay",
+                "Netplay",
+                "Turn this on when actually playing with other people over a network. It restores every rule the "
+                "original game applies to protect a networked session: no saves or savestates in multiplayer, and no "
+                "time-altering features. Leave it off for solo play in multiplayer levels.",
+                { { "disabled", "Disabled (solo play)" },
+                  { "enabled", "Enabled (playing with others)" },
+                  { NULL, NULL } },
+                "disabled",
+            },
+            {
+                "openjkdf2_max_speed",
+                "Fast-forward speed limit",
+                "How far the frontend's fast-forward is allowed to speed the game up. The game keeps its own pace "
+                "from a clock rather than a frame counter, so this scales that clock. Higher settings need the "
+                "frontend to actually run the core faster; if it cannot, the speed simply falls short of the limit "
+                "rather than making physics coarser. Ignored while Netplay is enabled.",
+                { { "2.0", "2x" },
+                  { "4.0", "4x" },
+                  { "8.0", "8x" },
+                  { "16.0", "16x" },
+                  { NULL, NULL } },
+                "4.0",
+            },
+            {
+                "openjkdf2_slow_motion",
+                "Slow-motion speed",
+                "How far the frontend's slow-motion slows the game down. Smaller steps are more accurate for physics, "
+                "not less, so this is safe to push. Ignored while Netplay is enabled.",
+                { { "0.5", "1/2 speed" },
+                  { "0.25", "1/4 speed" },
+                  { "0.1", "1/10 speed" },
+                  { NULL, NULL } },
+                "0.25",
+            },
             { NULL, NULL, NULL, { { NULL, NULL } }, NULL },
         };
         unsigned version = 0;
@@ -1230,6 +1383,10 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                 { "openjkdf2_boot_game_type", "Direct boot episode types; all|singleplayer|multiplayer" },
                 { "openjkdf2_resolution", "Internal resolution; 640x480|800x600|1024x768|1280x960|1920x1440|1280x720|1600x900|1920x1080|1280x800|1680x1050|1920x1200" },
                 { "openjkdf2_use_mods", "Load mods folder; enabled|disabled" },
+                { "openjkdf2_multiplayer_saves", "Multiplayer saves; enabled|disabled" },
+                { "openjkdf2_netplay", "Netplay; disabled|enabled" },
+                { "openjkdf2_max_speed", "Fast-forward speed limit; 4.0|2.0|8.0|16.0" },
+                { "openjkdf2_slow_motion", "Slow-motion speed; 0.25|0.5|0.1" },
                 { NULL, NULL },
             };
             cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
@@ -1359,11 +1516,19 @@ static void core_show_message(const char* text)
 #define CORE_STATE_MAGIC    "JKSTATE2"
 #define CORE_STATE_MAGIC_V1 "JKSTATE1"
 
-/* What the payload after the header is. Singleplayer states are the engine's
- * own savegame; multiplayer has no savegame system at all, so MP states
- * carry what MP resume carries -- level, pose and character. */
+/* What the payload after the header is. Normally the engine's own savegame;
+ * MP_POSE is the legacy shape used when "Multiplayer saves" is disabled (or
+ * netplay is on), where the engine refuses to save and the state carries what
+ * MP resume carries -- level, pose and character. */
 #define CORE_STATE_KIND_SAVEGAME 0u /* also what pre-MP states have (zeroed) */
 #define CORE_STATE_KIND_MP_POSE  1u
+
+/* Envelope flags. The MP bit is provenance, not decoration: MP and SP spawn
+ * DIFFERENT entities from the same JKL (the g_submodeFlags bit 0 spawn mask,
+ * sithThing.c), so restoring an SP savegame into an MP session -- or the
+ * reverse -- would repopulate the world wrongly. Enforced on restore. */
+#define CORE_STATE_FLAG_MOTS 0x1u
+#define CORE_STATE_FLAG_MP   0x2u
 
 /* Content provenance recorded with every state: which game it came from
  * (also enforced via the flags bit) and which mods/ files were loaded.
@@ -1396,9 +1561,33 @@ static bool core_savestate_context_ok(void)
     return true;
 }
 
-/* Route a payload to the restore path its kind belongs to. */
-static int core_state_restore(const void* payload, unsigned len, unsigned kind)
+/* Route a payload to the restore path its kind belongs to.
+ *
+ * Only ever reached with the engine running, which is what makes the MP/SP
+ * provenance check possible here and not in retro_unserialize: a deferred
+ * restore is validated before the engine has booted, when the session type
+ * isn't decided yet. Both call sites (unserialize, and the pending retry in
+ * retro_run) come through here with the engine live. */
+static int core_state_restore(const void* payload, unsigned len, unsigned kind, unsigned flags)
 {
+    bool state_is_mp = (flags & CORE_STATE_FLAG_MP) != 0;
+    bool session_is_mp = jkSession_IsMultiplayerSession() != 0;
+
+    /* Legacy pose states predate the flag; their kind already says MP. */
+    if (kind == CORE_STATE_KIND_MP_POSE)
+        state_is_mp = true;
+
+    if (state_is_mp != session_is_mp)
+    {
+        core_log(RETRO_LOG_ERROR, "unserialize: state is %s, session is %s\n",
+                 state_is_mp ? "multiplayer" : "singleplayer",
+                 session_is_mp ? "multiplayer" : "singleplayer");
+        core_show_message(state_is_mp
+            ? "OpenJKDF2: that state was made in a multiplayer session - load it from one"
+            : "OpenJKDF2: that state was made in a singleplayer session - load it from one");
+        return JKSESSION_STATE_BAD;
+    }
+
     return (kind == CORE_STATE_KIND_MP_POSE)
         ? jkSession_MpStateRestore(payload, len)
         : jkSession_StateRestore(payload, len);
@@ -1578,10 +1767,136 @@ RETRO_API void retro_unload_game(void)
     g_core.game_loaded = false;
 }
 
+/* Monotonic seconds. Deliberately not stdPlatform_GetTimeMsec: that is the
+ * engine's 32-bit millisecond clock, and millisecond resolution quantizes a
+ * 16.7ms frame badly enough to be audible here. */
+static double core_now_seconds(void)
+{
+#ifdef _WIN32
+    static double s_qpc_period;
+    LARGE_INTEGER now;
+    if (s_qpc_period == 0.0)
+    {
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        s_qpc_period = 1.0 / (double)freq.QuadPart;
+    }
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart * s_qpc_period;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+#endif
+}
+
+/* Game-speed multiplier for this frame. The frontend's own fast-forward and
+ * slow-motion hotkeys drive it, so there is no separate "speed" core option
+ * to keep in sync -- only the bounds. Netplay forces 1.0: with real peers,
+ * scaling game time is both a desync and a cheat. */
+static double core_current_speed(void)
+{
+    struct retro_throttle_state throttle;
+
+    if (g_core.netplay_enabled || !g_core.environ_cb)
+        return 1.0;
+
+    memset(&throttle, 0, sizeof(throttle));
+    if (g_core.environ_cb(RETRO_ENVIRONMENT_GET_THROTTLE_STATE, &throttle))
+    {
+        if (throttle.mode == RETRO_THROTTLE_FAST_FORWARD)
+            return g_core.max_speed;
+        if (throttle.mode == RETRO_THROTTLE_SLOW_MOTION)
+            return g_core.slow_speed;
+        return 1.0;
+    }
+
+    /* Frontends without env 71 still answer the older yes/no query. */
+    {
+        bool fastforwarding = false;
+        if (g_core.environ_cb(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &fastforwarding)
+            && fastforwarding)
+            return g_core.max_speed;
+    }
+    return 1.0;
+}
+
+/* Advance the virtual clock and return this retro_run's audio frame count.
+ * Call once per retro_run, at entry -- the delta that matters spans one
+ * frontend cadence period. Returns 0 for a slice shorter than one sample
+ * period; the remainder is carried, not lost. */
+static int core_advance_time(void)
+{
+    double now = core_now_seconds();
+    double real_dt, virtual_dt, ceiling;
+    int n;
+
+    if (!g_core.audio_clock_armed)
+    {
+        g_core.audio_clock_armed = true;
+        g_core.audio_last_time = now;
+        g_core.audio_frame_acc = 0.0;
+        g_core.audio_stat_t0 = now;
+        g_core.speed_cur = 1.0;
+        return CORE_AUDIO_FRAMES;
+    }
+
+    real_dt = now - g_core.audio_last_time;
+    g_core.audio_last_time = now;
+
+    if (real_dt < 0.0) /* monotonic, but don't trust it into a negative batch */
+        real_dt = 0.0;
+    if (real_dt > CORE_AUDIO_MAX_DT)
+        real_dt = CORE_AUDIO_MAX_DT;
+
+    virtual_dt = real_dt * core_current_speed();
+
+    /* See CORE_NOMINAL_DT: never scale a step coarser than speed 1.0 would
+     * have produced. real_dt itself is always allowed, so normal play at any
+     * frame rate is untouched. */
+    ceiling = (real_dt > CORE_NOMINAL_DT) ? real_dt : CORE_NOMINAL_DT;
+    if (virtual_dt > ceiling)
+        virtual_dt = ceiling;
+
+    g_core.virtual_ms += virtual_dt * 1000.0;
+    g_core.speed_cur = (real_dt > 0.0) ? (virtual_dt / real_dt) : 1.0;
+
+    /* Audio follows the VIRTUAL clock, not the wall clock: the mix has to
+     * cover the game time the engine is about to simulate. At 4x this
+     * over-produces and the frontend pitches or drops the surplus -- the
+     * classic fast-forward sound -- and at 1.0x it is identical to the
+     * wall-clock pacing it replaces. */
+    g_core.audio_frame_acc += virtual_dt * CORE_SAMPLE_RATE;
+
+    /* Backlog ceiling: frames that returned early (or never submitted) still
+     * fed the accumulator, and an unbounded one would drain at max rate. */
+    if (g_core.audio_frame_acc > (double)CORE_AUDIO_FRAMES_MAX)
+        g_core.audio_frame_acc = (double)CORE_AUDIO_FRAMES_MAX;
+
+    n = (int)g_core.audio_frame_acc;
+    g_core.audio_frame_acc -= (double)n;
+    return n;
+}
+
+/* The engine's clock (stdPlatform.c, LIBRETRO_BUILD). Monotonic by
+ * construction, unlike Linux_TimeMs's timespec_get(TIME_UTC) -- so an NTP
+ * step can no longer jolt the engine's frame delta. */
+uint32_t libretro_VirtualTimeMs(void)
+{
+    return (uint32_t)g_core.virtual_ms;
+}
+
 RETRO_API void retro_run(void)
 {
+    int audio_frames;
+
     if (!g_core.game_loaded || g_core.engine_start_failed)
         return;
+
+    /* Sampled at entry, consumed at the bottom: the delta that matters spans
+     * one frontend cadence period, not the engine's work inside this call.
+     * Also advances the virtual clock the engine reads this frame. */
+    audio_frames = core_advance_time();
 
     if (!s_frontend_fiber)
     {
@@ -1646,7 +1961,7 @@ RETRO_API void retro_run(void)
     if (g_core.pending_state && g_core.engine_started)
     {
         int rc = core_state_restore(g_core.pending_state, g_core.pending_state_len,
-                                    g_core.pending_state_kind);
+                                    g_core.pending_state_kind, g_core.pending_state_flags);
         if (rc == JKSESSION_STATE_OK)
             core_drop_pending_state("restore queued");
         else if (rc == JKSESSION_STATE_BAD)
@@ -1683,20 +1998,43 @@ RETRO_API void retro_run(void)
     if (g_core.video_cb)
         g_core.video_cb(RETRO_HW_FRAME_BUFFER_VALID, Window_xSize, Window_ySize, 0);
 
-    /* Audio (M2 consolidation): pull one tick of the engine's OpenAL loopback
-     * mix -- exactly 800 frames (48000/60, integer, no drift). The engine
-     * opens no real audio device; every audio path (SFX, cutscene, stdMci
-     * music) is mixed by OpenAL Soft into this render. Engine fiber and core
-     * share one thread, so this is race-free by construction. Silence until
-     * the engine's sound startup (or after shutdown / loopback fallback). */
-    if (g_core.audio_batch_cb)
+    /* Audio (M2 consolidation): pull this frame's slice of the engine's
+     * OpenAL loopback mix -- audio_frames, derived from real elapsed time
+     * rather than assumed to be 48000/60. The engine opens no real audio
+     * device; every audio path (SFX, cutscene, stdMci music) is mixed by
+     * OpenAL Soft into this render. Engine fiber and core share one thread,
+     * so this is race-free by construction. Silence until the engine's sound
+     * startup (or after shutdown / loopback fallback). */
+    if (g_core.audio_batch_cb && audio_frames > 0)
     {
         /* Keep the stdMci music stream fed (SDL_mixer decode -> queued AL
-         * buffers) before pulling the mix that consumes it. */
+         * buffers) before pulling the mix that consumes it. The stream's
+         * chunk size is independent of audio_frames: the pump tops up
+         * whatever the render freed, so its queue depth self-regulates. */
         libretro_stdMci_Pump();
-        if (!libretro_stdSound_RenderAudio(g_core.audio_out, CORE_AUDIO_FRAMES))
-            memset(g_core.audio_out, 0, sizeof(g_core.audio_out));
-        g_core.audio_batch_cb(g_core.audio_out, CORE_AUDIO_FRAMES);
+        if (!libretro_stdSound_RenderAudio(g_core.audio_out, audio_frames))
+            memset(g_core.audio_out, 0, (size_t)audio_frames * 2 * sizeof(int16_t));
+        g_core.audio_batch_cb(g_core.audio_out, (size_t)audio_frames);
+    }
+
+    /* Pacing telemetry: the effective rate should sit at CORE_SAMPLE_RATE no
+     * matter how fast the frontend runs us -- only the mean batch moves. A
+     * rate well above it means we are over-producing and the frontend is
+     * dropping the surplus, which is what "stutters and races" sounds like. */
+    g_core.audio_stat_frames += audio_frames;
+    if (++g_core.audio_stat_calls >= 600)
+    {
+        double elapsed = g_core.audio_last_time - g_core.audio_stat_t0;
+        if (elapsed > 0.0)
+            core_log(RETRO_LOG_DEBUG,
+                     "audio: %d calls, %lld frames in %.2fs = %.0f Hz (mean batch %.1f, speed %.2fx)\n",
+                     g_core.audio_stat_calls, (long long)g_core.audio_stat_frames, elapsed,
+                     (double)g_core.audio_stat_frames / elapsed,
+                     (double)g_core.audio_stat_frames / (double)g_core.audio_stat_calls,
+                     g_core.speed_cur);
+        g_core.audio_stat_t0 = g_core.audio_last_time;
+        g_core.audio_stat_calls = 0;
+        g_core.audio_stat_frames = 0;
     }
 
     if (s_engine_exit_requested && g_core.environ_cb)
@@ -1748,7 +2086,8 @@ RETRO_API bool retro_serialize(void* data, size_t size)
     memset(data, 0, size);
     core_state_envelope_t* env = (core_state_envelope_t*)data;
     memcpy(env->magic, CORE_STATE_MAGIC, sizeof(env->magic));
-    env->flags = g_core.is_mots ? 1u : 0u;
+    env->flags = (g_core.is_mots ? CORE_STATE_FLAG_MOTS : 0u)
+               | (jkSession_IsMultiplayerSession() ? CORE_STATE_FLAG_MP : 0u);
     /* Provenance: the game, and the mod files this session actually loaded. */
     strncpy(env->game, g_core.is_mots ? "mots" : "jk1", sizeof(env->game) - 1);
     strncpy(env->mods, jkSession_ModsManifest(), sizeof(env->mods) - 1);
@@ -1829,7 +2168,7 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
         core_log(RETRO_LOG_ERROR, "unserialize: bad payload length %u\n", env->payload_len);
         return false;
     }
-    if ((env->flags & 1u) != (g_core.is_mots ? 1u : 0u))
+    if ((env->flags & CORE_STATE_FLAG_MOTS) != (g_core.is_mots ? CORE_STATE_FLAG_MOTS : 0u))
     {
         core_log(RETRO_LOG_ERROR, "unserialize: state is from '%.8s', this is '%s'\n",
                  env->game, g_core.is_mots ? "mots" : "jk1");
@@ -1853,7 +2192,7 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
 
     if (g_core.engine_started)
     {
-        int rc = core_state_restore(payload, env->payload_len, env->payload_kind);
+        int rc = core_state_restore(payload, env->payload_len, env->payload_kind, env->flags);
         if (rc == JKSESSION_STATE_OK)
             return true; /* queued: the engine loads it over the next frames */
         if (rc == JKSESSION_STATE_BAD)
@@ -1879,6 +2218,7 @@ RETRO_API bool retro_unserialize(const void* data, size_t size)
     g_core.pending_state = copy;
     g_core.pending_state_len = env->payload_len;
     g_core.pending_state_kind = env->payload_kind;
+    g_core.pending_state_flags = env->flags;
     g_core.pending_state_frames = CORE_STATE_PENDING_RETRY_FRAMES;
     if (g_core.engine_started)
         core_show_message("OpenJKDF2: state load queued - it applies as soon as the game is ready");

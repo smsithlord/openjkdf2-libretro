@@ -46,6 +46,16 @@ extern int32_t Main_bAutostartSp;
 extern char    Main_strEpisode[129];
 extern char    Main_strMap[128+4];
 
+#ifdef LIBRETRO_BUILD
+// Multiplayer saves (devdocs/10). Declared in engine_config.h and read by
+// SITH_MP_SAVES_BLOCKED() at every save gate. Set from core options as
+// (multiplayer_saves && !netplay): a session with real peers keeps the stock
+// behavior, a solo "multiplayer" session gets the full savegame system.
+// Defaults to the shipped option defaults so an engine that boots before the
+// core reads its variables behaves as configured.
+int jkSession_bMpSavesEnabled = 1;
+#endif
+
 // Boot configuration handed in by the core before the engine starts.
 static int  jkSession_bootMode = JKSESSION_BOOT_MENU;
 static int  jkSession_directFilter = JKSESSION_DIRECT_ALL;
@@ -274,7 +284,13 @@ void jkSession_SaveCurrent(void)
     // live player, which bPlayerValid guarantees (the boot-time SaveCurrent
     // no-ops never reach here). Skipped when the engine already has a
     // save/load in flight so that operation is never clobbered.
-    if (bPlayerValid && mode == SESSION_MODE_SP && !sithNet_isMulti
+    // Added (devdocs/10): MP sessions co-write the session save too, when the
+    // savegame system is available to them. SITH_MP_SAVES_BLOCKED() is the
+    // same predicate sithGamesave_Save uses, so this can never arm a write
+    // that the save itself would then refuse; in SP it is always false, so
+    // the singleplayer behavior is bit-for-bit unchanged.
+    if (bPlayerValid && (mode == SESSION_MODE_SP || mode == SESSION_MODE_MP)
+        && !SITH_MP_SAVES_BLOCKED()
         && sithGamesave_state == SITH_GS_NONE)
     {
         char saveFname[64];
@@ -582,8 +598,14 @@ int jkSession_ResolveAutoBootMode(void)
 
 int jkSession_StartBootSave(void)
 {
+    // Added (devdocs/10): MP resume too. The MP caller runs this AFTER
+    // sithMulti_CreatePlayer, so g_submodeFlags bit 0 is already set and the
+    // blocked-check below is meaningful; a session save written while MP
+    // saves were on must not be restored into a netplay session that has
+    // since turned them off.
     if (!jkSession_bResumed
-        || jkSession_currentMode != SESSION_MODE_SP
+        || (jkSession_currentMode != SESSION_MODE_SP && jkSession_currentMode != SESSION_MODE_MP)
+        || SITH_MP_SAVES_BLOCKED()
         || jkSession_bootMode != JKSESSION_BOOT_RESUME)
         return 0;
 
@@ -905,6 +927,11 @@ int jkSession_MpStateRestore(const void* pData, unsigned int len)
     return JKSESSION_STATE_OK;
 }
 
+int jkSession_IsMultiplayerSession(void)
+{
+    return sithNet_isMulti ? 1 : 0;
+}
+
 int jkSession_StateCapture(void* pOut, unsigned int outCap, unsigned int* pOutLen)
 {
     if (!pOut || !pOutLen)
@@ -922,12 +949,12 @@ int jkSession_StateCapture(void* pOut, unsigned int outCap, unsigned int* pOutLe
     // direct boot (only the level-advance logic clears it), not a
     // transition-in-flight signal.
     if (!sithWorld_g_pCurrentWorld || !sithPlayer_g_pLocalPlayerThing
-        || sithNet_isMulti || !jkPlayer_playerShortName[0]
+        || SITH_MP_SAVES_BLOCKED() || !jkPlayer_playerShortName[0]
         || sithGamesave_state != SITH_GS_NONE)
     {
-        stdPlatform_Printf("jkSession: state capture refused (world=%d player=%d multi=%d profile=%d gsState=%d)\n",
+        stdPlatform_Printf("jkSession: state capture refused (world=%d player=%d mpBlocked=%d profile=%d gsState=%d)\n",
                            sithWorld_g_pCurrentWorld != NULL, sithPlayer_g_pLocalPlayerThing != NULL,
-                           sithNet_isMulti, jkPlayer_playerShortName[0] != 0,
+                           SITH_MP_SAVES_BLOCKED(), jkPlayer_playerShortName[0] != 0,
                            sithGamesave_state);
         return 0;
     }
@@ -1008,7 +1035,7 @@ int jkSession_StateRestore(const void* pData, unsigned int len)
     // restore's own gui-state request supersedes it, which is exactly what
     // "load a state at startup" should do. (jkPlayer_bLoadingSomething is
     // not a transition signal -- see StateCapture.)
-    if (!jkPlayer_playerShortName[0] || sithNet_isMulti
+    if (!jkPlayer_playerShortName[0] || SITH_MP_SAVES_BLOCKED()
         || sithGamesave_state != SITH_GS_NONE)
         return JKSESSION_STATE_RETRY;
 

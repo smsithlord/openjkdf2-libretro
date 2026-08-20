@@ -23,6 +23,9 @@ const char* sithGamesave_AutosaveMapName(void); // Added: single autosave slot o
 extern int sithGamesave_bForceSlim;             // Added: force a slim (inventory-only) save
 void sithGamesave_DcFlushSlimToVmu(void);       // Added: write the slim VMU copy alongside SD
 #endif
+// Added: set while RestoreFile replays the save's DSS message stream (devdocs/10).
+// Every platform runs that loop, so this is not Dreamcast-gated.
+extern int sithGamesave_bReplayingMessages;
 
 //static int (*sithGamesave_Restore)(char *a1, int a2, int a3) = (void*)sithGamesave_Restore_ADDR;
 //static int (*sithGamesave_RestoreFile)(char *fpath) = (void*)sithGamesave_RestoreFile_ADDR;

@@ -953,9 +953,27 @@ static int Linux_stdFeof(stdFile_t hGobFile)
     return feof((FILE*)hGobFile);
 }
 
+#ifdef LIBRETRO_BUILD
+extern uint32_t libretro_VirtualTimeMs(void); // libretro_core.c
+#endif
+
 uint32_t stdPlatform_GetTimeMsec()
 {
+#ifdef LIBRETRO_BUILD
+    // devdocs/11: the core owns a VIRTUAL clock so the frontend's fast-forward
+    // and slow-motion can scale game time. This is the engine's single time
+    // source, so sithTime and every UI timer scale coherently with no
+    // per-caller triage. Two bonuses: it is monotonic (QPC/CLOCK_MONOTONIC)
+    // where Linux_TimeMs uses timespec_get(TIME_UTC) and can be stepped by
+    // NTP, and it does not advance during a multi-second level load, which
+    // removes the MAXDELTA delta spike on the first frame after one.
+    //
+    // Deliberately NOT hooked: jkCutscene paces SMUSH A/V off Linux_TimeUs
+    // directly, so cutscenes stay locked to their own audio.
+    return libretro_VirtualTimeMs();
+#else
     return Linux_TimeMs();
+#endif
 }
 #endif
 

@@ -160,6 +160,12 @@ int jkSession_StateRestore(const void* pData, unsigned int len);
 int jkSession_MpStateCapture(void* pOut, unsigned int outCap, unsigned int* pOutLen);
 int jkSession_MpStateRestore(const void* pData, unsigned int len);
 
+// Is the LIVE session a multiplayer one? Recorded into savestate provenance
+// (devdocs/10): MP and SP spawn different entities from the same JKL, so a
+// state must only ever be restored into the session type it was taken in.
+// Wraps sithNet_isMulti so the core doesn't spread engine externs.
+int jkSession_IsMultiplayerSession(void);
+
 #ifdef __cplusplus
 }
 #endif
