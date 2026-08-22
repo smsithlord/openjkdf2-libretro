@@ -190,6 +190,44 @@ the following frames. All verified in RetroArch via UDP commands:
       first .mpc (verified: JK1MP direct boot hosts as the profile's
       character), else the stock Kyle default.
 
+## Test harness (devdocs/13) — DONE
+
+Our own minimal libretro frontend, `tools/harness/`, so verification stops
+depending on driving RetroArch by hand. Headless by default (hidden window,
+real GL 3.3 context); scriptable and drivable live over a TCP port. Separate
+CMake project, shares only `libretro.h` with the core, links no engine code —
+**nothing in `src/` changed for it and nothing in `src/` may depend on it.**
+
+- [x] Loads the core DLL, answers the libretro callbacks, owns the FBO the core
+      renders into; screenshots are a real readback written as PNG.
+- [x] Scripted input (`key`/`mouse`/`pad`/`type`) — closes the gap that
+      `SendKeys` never could, since Windows denies foreground focus to a
+      background process.
+- [x] `expect <substring> [timeout]` turns "take a screenshot and look at it"
+      into an assertion that fails the script.
+- [x] `audio` reports frames/peak/RMS, replacing the
+      `RECORDING_TOGGLE` + `ffmpeg -af volumedetect` detour (which also dragged
+      the frame loop below 60fps while measuring).
+- [x] `state save|load` straight against the ABI — no deploying the DLL into
+      RetroArch's `cores/` with a matching `.info` just to test savestates.
+- [x] Input **recording and replay**, so a human performs a complex sequence
+      once and it replays headless forever after. Input replay, not
+      deterministic state replay — the engine's clock is wall-clock derived.
+- [x] `--window` to observe a run, `--input` to play it (doubles as a small
+      manual-testing frontend).
+- [x] Unbuffered console + JSONL event log, both live. Fixes the old
+      block-buffered-stdout problem outright (same process, no pipe).
+- [x] Verified end-to-end: JK1 boots headless into its first level, input moves
+      the player, savestate round-trips to an identical frame, record→replay
+      reproduces the end state, serve mode free-runs and exits cleanly.
+
+Next user of this: the planned **cog factory** (writing and testing COG scripts
+against headless simulations for level-design/mod iteration) sits on the
+harness's command protocol.
+
+RetroArch remains the ground truth for frontend-compatibility questions (menu
+integration, hotkeys, real user setups). The harness covers everything else.
+
 ## M1 — playable v1 (finish line for "it's a real core")
 
 ### Hide/neutralize features that can't work under a frontend

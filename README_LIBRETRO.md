@@ -60,6 +60,22 @@ tools\RetroArch-Win64\retroarch.exe -L build_libretro\Release\openjkdf2_libretro
   back) reach the game instead of RetroArch's hotkeys.
 - MoTS: load a `.goo` episode file (untested until M3).
 
+## Testing
+
+There is also a minimal libretro frontend of our own at
+[tools/harness/](tools/harness/) — headless by default, scriptable, drivable
+live over a TCP port, with screenshots, savestates, scripted input and input
+record/replay. It is the fast loop for development; RetroArch stays the ground
+truth for frontend-compatibility questions. See
+[tools/harness/README.md](tools/harness/README.md).
+
+```
+cmake -S tools/harness -B build_harness -A x64
+cmake --build build_harness --config Release
+build_harness\Release\openjkdf2_harness.exe --rom testdata\jk1\episode\JK1.GOB ^
+    --script tools\harness\tests\smoke_jk1.cmds
+```
+
 ## Current limitations (M0)
 
 - Audio plays through the engine's own OpenAL device, not RetroArch's audio
