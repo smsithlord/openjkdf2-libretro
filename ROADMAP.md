@@ -228,6 +228,34 @@ harness's command protocol.
 RetroArch remains the ground truth for frontend-compatibility questions (menu
 integration, hotkeys, real user setups). The harness covers everything else.
 
+## COG Factory debug mode (devdocs/14) — DONE
+
+Core option `openjkdf2_cogfactory` (default off) gating `[CF] ...` debug
+signals for the external content-generation tooling. The core knows the factory
+exists; it never depends on it, and nothing outside the gate changes behaviour.
+
+Exists because the engine fails *silently* exactly where a content generator
+gets things wrong — each of these otherwise yields a level that loads, renders
+and does nothing, with a clean log:
+
+- [x] **COG `Print()` reaches the log.** `jkDev_PrintUniString` wrote with raw
+      `printf`, which is not the chokepoint the core mirrors — so COG output
+      was invisible to the harness's `expect`. One hook also lifts every
+      `sithConsole_PrintString` line, including the per-section JKL parse trace.
+- [x] **Cog load failures reported**, distinguishing an exhausted
+      `World scripts N` pool (JKL bug) from a parse failure (COG bug). Both
+      were silent, and neither fails the level load.
+- [x] **Level inventory dump** after a successful load: surfaces with flags,
+      things with template/sector/position, and per cog every symbol ref with
+      its `linkid`, `mask` and **the JKL's own argument string** — the wiring
+      check a generated level needs. Adapts to content size (all surfaces under
+      256, cog-linked only above).
+- [x] Verified both ways: gate off, the existing harness tests pass with zero
+      `[CF]` lines; gate on, `expect` matches the enable banner, the section
+      trace, and the inventory. Stock JK1 reports its own cog-linked walkable
+      floors (`flags=0x7 FLOOR COLLIDE COGLINKED`) — the exact pattern the
+      factory's first target needs, confirmed in shipped content.
+
 ## M1 — playable v1 (finish line for "it's a real core")
 
 ### Hide/neutralize features that can't work under a frontend

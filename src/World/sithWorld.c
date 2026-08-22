@@ -1,5 +1,6 @@
 #include "sithWorld.h"
 
+#include "Main/jkCogFactory.h"
 #include "General/stdConffile.h"
 #include "General/stdString.h"
 #include "World/sithModel.h"
@@ -228,6 +229,9 @@ LABEL_19:
         // Added: dump the per-file allocation catalog once the world is in.
         stdPlatform_PrintAllocStats();
 #endif
+        // Added: COG Factory inventory -- the index tables a content generator
+        // has to diff its own output against (devdocs/14). Gated; no-op otherwise.
+        jkCogFactory_DumpWorld(pWorld);
         return 1;
     }
     goto cleanup;

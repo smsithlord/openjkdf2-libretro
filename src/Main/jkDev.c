@@ -1,5 +1,6 @@
 #include "jkDev.h"
 
+#include "Main/jkCogFactory.h"
 #include "General/stdHashtbl.h"
 #include "General/stdBitmap.h"
 #include "General/stdFont.h"
@@ -398,6 +399,17 @@ LABEL_7:
     printf("\r                                            \r");
     stdString_snprintf(tmp2, sizeof(tmp2), "%s%c", tmp, _strlen(tmp) && tmp[_strlen(tmp)-1] == '\n' ? ' ' : '\n');
     printf("%s", tmp2);
+#ifdef LIBRETRO_BUILD
+    /* This raw printf is the ONLY output path for COG Print()/PrintInt() and
+     * for every sithConsole_PrintString line (including the per-section JKL
+     * parse trace) -- and raw printf is not the chokepoint the core mirrors to
+     * the frontend log, so none of it is visible to an automated test. Under
+     * the COG Factory gate, re-emit through stdPlatform_Printf, which is.
+     * (devdocs/14. The printf above is left alone so console behaviour and
+     * every other platform are unchanged.) */
+    if (JKCF_ON())
+        jkCogFactory_Printf("print: %s", tmp);
+#endif
 #ifdef QUAKE_CONSOLE
     jkQuakeConsole_PrintLine(tmp2);
 #endif

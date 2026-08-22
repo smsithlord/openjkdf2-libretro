@@ -1,5 +1,6 @@
 #include "sithCog.h"
 
+#include "Main/jkCogFactory.h"
 #include "jk.h"
 #include "types.h"
 #include "Devices/sithConsole.h"
@@ -654,6 +655,11 @@ sithCog* sithCog_Load(const char *pName)
         }
         else
         {
+            // Added: both failure modes are silent in the stock engine, and both
+            // produce a level that loads and does nothing. Report which one under
+            // the COG Factory gate (devdocs/14).
+            jkCogFactory_CogLoadFailed(aName,
+                v9 >= sithWorld_g_pLastLoadedWorld->sizeCogScripts);
             v8 = 0;
         }
     }

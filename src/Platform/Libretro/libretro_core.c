@@ -50,6 +50,7 @@
 #include "Win95/Window.h"      /* pulls types.h + generated globals.h (g_hWnd, g_should_exit, ...) */
 #include "Main/Main.h"
 #include "Main/jkSession.h"
+#include "Main/jkCogFactory.h"
 #include "Main/jkRes.h"
 #include "World/jkPlayer.h"
 #include "Platform/stdControl.h"
@@ -1152,6 +1153,20 @@ static void core_refresh_options(void)
     if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
         jkRes_bAllowModsDir = strcmp(var.value, "disabled") != 0;
 
+    /* COG Factory debug mode (devdocs/14). Gates a set of "[CF] ..." debug
+     * signals for the external content-generation tooling: COG Print() output,
+     * per-section JKL parse trace, cog load failures, and a level inventory
+     * dump. Off by default; live-applicable (the gate is a runtime predicate).
+     * The core knows the factory exists; it never depends on it. */
+    var.key = "openjkdf2_cogfactory";
+    var.value = NULL;
+    {
+        int want = 0;
+        if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+            want = strcmp(var.value, "enabled") == 0;
+        jkCogFactory_SetEnabled(want);
+    }
+
     /* Direct-boot episode-type filter; the game mode itself always follows
      * the episode's own TYPE (jkSession_ResolveAutoBootMode). */
     var.key = "openjkdf2_boot_game_type";
@@ -1369,6 +1384,17 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                   { NULL, NULL } },
                 "0.25",
             },
+            {
+                "openjkdf2_cogfactory",
+                "COG Factory debug signals",
+                "For content development only. Emits '[CF] ...' diagnostics to the frontend log: COG Print() output, "
+                "the per-section level parse trace, cog load failures (which are silent otherwise), and a level "
+                "inventory dump listing surfaces, things and cog symbol bindings. Verbose; leave disabled for play.",
+                { { "disabled", "Disabled" },
+                  { "enabled", "Enabled" },
+                  { NULL, NULL } },
+                "disabled",
+            },
             { NULL, NULL, NULL, { { NULL, NULL } }, NULL },
         };
         unsigned version = 0;
@@ -1387,6 +1413,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                 { "openjkdf2_netplay", "Netplay; disabled|enabled" },
                 { "openjkdf2_max_speed", "Fast-forward speed limit; 4.0|2.0|8.0|16.0" },
                 { "openjkdf2_slow_motion", "Slow-motion speed; 0.25|0.5|0.1" },
+                { "openjkdf2_cogfactory", "COG Factory debug signals; disabled|enabled" },
                 { NULL, NULL },
             };
             cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
