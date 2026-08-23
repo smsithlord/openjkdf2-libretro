@@ -137,5 +137,13 @@ testdata/
 # under a plain "tools/" would never take effect.
 tools/*
 !tools/harness/
+# The merged JK authoring spec (tools/jkspec) plus the two upstream references
+# it is built from. DataMaster and Parsec are vendored UNMODIFIED and pinned so
+# the extraction stays reproducible; see tools/jkspec/NOTICE.md for attribution
+# and the licensing caveat. The other tool folders (ZED, ConMan, Mat16,
+# RetroArch) stay ignored -- they are attended GUI binaries, not inputs.
+!tools/jkspec/
+!tools/DataMaster/
+!tools/Parsec/
 build_harness/
 harness_out/
