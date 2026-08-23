@@ -150,8 +150,19 @@ int jkCogFactory_SetCam(const char* pSpec)
     if (!jkCogFactory_bEnabled)
         return 0;
 
-    /* Empty string releases the camera back to the engine. */
-    if (!pSpec || !pSpec[0] || pSpec[0] == '-')
+    /* Empty string, or the bare sentinel "-" that `cam off` sends
+     * (tools/harness/cmd.c:834), releases the camera back to the engine.
+     *
+     * The test MUST be for the whole string being "-", not just its first
+     * character: a pose whose x is negative -- "-3.0 -3.3 0.3 ..." -- also
+     * starts with '-', and the looser test silently released the camera
+     * instead of pinning it. That is invisible in a test run, because
+     * "cam: released" is exactly what a correct `cam off` prints, and the
+     * screenshot that follows is a valid picture of the wrong viewpoint.
+     * Found by p09-modular-maze, whose level is centred on the origin, so
+     * every camera west of centre had a negative x and five shots came back
+     * byte-identical to the player's own view. */
+    if (!pSpec || !pSpec[0] || (pSpec[0] == '-' && !pSpec[1]))
     {
         if (s_cam_active)
             jkCogFactory_Printf("cam: released");
