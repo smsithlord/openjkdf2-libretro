@@ -448,11 +448,19 @@ pacing. Now (see DESIGN.md "Audio" for the implemented shape):
 
 - De-SDL the core entirely (TWL/Dreamcast-style platform files) — drops the
   SDL3/SDL_mixer dependency; prerequisite for exotic libretro platforms.
-- Optional save relocation: redirect `player/` + `persist/` + settings writes
-  into the frontend's save directory (`GET_SAVE_DIRECTORY`) so RetroArch's
-  backup/cloud-sync tooling covers JK saves. Native files stay the mechanism —
-  the SRAM (.srm) interface is deliberately unused (fixed-size blob, wrong
-  shape for file-based saves; `retro_get_memory_size` returns 0 on purpose).
+- Portable mode — **level 1 shipped** (`openjkdf2_portable`, devdocs/16).
+  `no_writes` makes the engine create and modify nothing; default is off and
+  is byte-identical to before. Verified: zero files added, removed or changed
+  across a full run, all 13 generator projects still pass with writes refused
+  (the engine already handled a failed write — it is the disk-full path), and
+  4 concurrent copies of one test sharing a basefolder go from **3 of 4
+  crashing** to 4 of 4 byte-identical.
+  - Optional save relocation is the natural **level 2**: redirect `player/` +
+    `persist/` + settings writes into the frontend's save directory
+    (`GET_SAVE_DIRECTORY`) so RetroArch's backup/cloud-sync tooling covers JK
+    saves. Native files stay the mechanism — the SRAM (.srm) interface is
+    deliberately unused (fixed-size blob, wrong shape for file-based saves;
+    `retro_get_memory_size` returns 0 on purpose).
 - Save states: no engine snapshot support, and the engine-on-a-fiber design
   makes true snapshots impossible (a parked C stack isn't serializable).
   Wrapping native saves would break rewind/run-ahead/netplay expectations;

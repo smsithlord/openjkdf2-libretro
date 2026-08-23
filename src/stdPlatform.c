@@ -70,9 +70,60 @@ uint64_t Linux_TimeUs()
 #endif
 }
 
+// Portable mode. See stdPlatform.h for what the levels are and why.
+int stdPlatform_portableMode = JKPORTABLE_OFF;
+static int stdPlatform_portableRefused = 0;
+
+#define STDPLATFORM_PORTABLE_LOG_FIRST 8
+
+int stdPlatform_ModeWrites(const char* pMode)
+{
+    if (!pMode)
+        return 0;
+    // "r+" opens an existing file for update, so '+' counts as write access
+    // just as much as 'w' and 'a' do.
+    for (; *pMode; pMode++)
+    {
+        if (*pMode == 'w' || *pMode == 'a' || *pMode == '+')
+            return 1;
+    }
+    return 0;
+}
+
+int stdPlatform_PortableRefuse(const char* pWhat, const char* pPath)
+{
+    stdPlatform_portableRefused++;
+    if (stdPlatform_portableRefused <= STDPLATFORM_PORTABLE_LOG_FIRST)
+    {
+        stdPlatform_Printf("[portable] refused %s '%s'\n",
+                           pWhat ? pWhat : "write", pPath ? pPath : "(null)");
+    }
+    else if (stdPlatform_portableRefused == STDPLATFORM_PORTABLE_LOG_FIRST + 1)
+    {
+        stdPlatform_Printf("[portable] ... further refusals not logged individually\n");
+    }
+    return 0;
+}
+
+int stdPlatform_PortableRefusedCount(void)
+{
+    return stdPlatform_portableRefused;
+}
+
 static stdFile_t Linux_stdFileOpen(const char* fpath, const char* mode)
 {
     char tmp[512];
+
+    // The chokepoint: every engine file open goes through the HostServices
+    // table, and this is the entry the libretro build installs. Failing here
+    // is the same failure the engine already handles when a path is bad or a
+    // disk is full, which is why refusing is safe -- it is not a new state.
+    if (PORTABLE_NO_WRITES() && stdPlatform_ModeWrites(mode))
+    {
+        stdPlatform_PortableRefuse("open", fpath);
+        return 0;
+    }
+
 #ifdef TARGET_DREAMCAST
     // Added: read-only assets live on the GD-ROM; the CWD is writable storage.
     // Route relative asset paths back to the asset root (writable data is left

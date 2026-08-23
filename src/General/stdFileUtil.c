@@ -265,6 +265,11 @@ int stdFileUtil_Deltree(const char* lpPathName)
     char tmp[512];
     size_t len = _strlen(lpPathName);
 
+    // The most destructive call in the file layer, and the one most worth
+    // refusing: it recurses.
+    if (PORTABLE_NO_WRITES())
+        return stdPlatform_PortableRefuse("deltree", lpPathName), 1;
+
     if (len > 512) {
         len = 512;
     }
@@ -508,6 +513,11 @@ int stdFileUtil_FileExists(const char *path)
 
 void stdFileUtil_RmDir(const char *path)
 {
+    if (PORTABLE_NO_WRITES())
+    {
+        stdPlatform_PortableRefuse("rmdir", path);
+        return;
+    }
     rmdir(path);
 }
 
@@ -535,6 +545,14 @@ int stdFileUtil_MkDir(char* path)
     char tmp[512];
     size_t len = _strlen(path);
 
+    // Returns 1 (success) even when refused. Callers use this to make a
+    // profile or save directory before writing into it; reporting failure
+    // would send some of them down an error path, while reporting success
+    // leaves them to hit the refusal at the file open, which is the one place
+    // the engine already knows how to fail.
+    if (PORTABLE_NO_WRITES())
+        return stdPlatform_PortableRefuse("mkdir", path), 1;
+
     if (len > 512) {
         len = 512;
     }
@@ -558,6 +576,9 @@ int stdFileUtil_DelFile(char* lpFileName)
 {
     char tmp[512];
     size_t len = _strlen(lpFileName);
+
+    if (PORTABLE_NO_WRITES())
+        return stdPlatform_PortableRefuse("delete", lpFileName), 1;
 
     if (len > 512) {
         len = 512;

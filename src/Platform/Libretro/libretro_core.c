@@ -1159,6 +1159,34 @@ static void core_refresh_options(void)
     if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
         jkRes_bAllowModsDir = strcmp(var.value, "disabled") != 0;
 
+    /* Portable mode. The engine writes into the game's basefolder (player/,
+     * the cvar/bind JSON, registry.json, the session save); at level
+     * no_writes it creates and modifies nothing at all. Live-applicable --
+     * the predicate is read at each write site -- so a frontend can flip it
+     * mid-session and the next write is refused.
+     *
+     * Levels rather than a bool, because the roadmap's "redirect writes into
+     * GET_SAVE_DIRECTORY" is the same question answered differently. Default
+     * is OFF and is byte-identical to previous behaviour. */
+    var.key = "openjkdf2_portable";
+    var.value = NULL;
+    {
+        int want = JKPORTABLE_OFF;
+        if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+        {
+            if (!strcmp(var.value, "no_writes"))
+                want = JKPORTABLE_NO_WRITES;
+        }
+        if (want != stdPlatform_portableMode)
+        {
+            stdPlatform_portableMode = want;
+            core_log(RETRO_LOG_INFO, "portable mode %s\n",
+                     want == JKPORTABLE_NO_WRITES
+                         ? "no_writes -- the engine will create and modify nothing"
+                         : "off -- writes land in the game's basefolder");
+        }
+    }
+
     /* COG Factory debug mode (devdocs/14). Gates a set of "[CF] ..." debug
      * signals for the external content-generation tooling: COG Print() output,
      * per-section JKL parse trace, cog load failures, and a level inventory
@@ -1449,6 +1477,19 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                 "0.25",
             },
             {
+                "openjkdf2_portable",
+                "Portable mode (no writes)",
+                "The game normally writes into its own folder: player profiles, control bindings, video "
+                "settings, the registry and the auto-resume save. 'No writes' makes it create and modify "
+                "nothing, so the folder can live on read-only media -- and so several copies of the game "
+                "can share one folder without overwriting each other's settings. Nothing is saved while "
+                "this is on, including the auto-resume position.",
+                { { "disabled", "Disabled" },
+                  { "no_writes", "No writes" },
+                  { NULL, NULL } },
+                "disabled",
+            },
+            {
                 "openjkdf2_cogfactory",
                 "COG Factory debug signals",
                 "For content development only. Emits '[CF] ...' diagnostics to the frontend log: COG Print() output, "
@@ -1477,6 +1518,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
                 { "openjkdf2_netplay", "Netplay; disabled|enabled" },
                 { "openjkdf2_max_speed", "Fast-forward speed limit; 4.0|2.0|8.0|16.0" },
                 { "openjkdf2_slow_motion", "Slow-motion speed; 0.25|0.5|0.1" },
+                { "openjkdf2_portable", "Portable mode (no writes); disabled|no_writes" },
                 { "openjkdf2_cogfactory", "COG Factory debug signals; disabled|enabled" },
                 { NULL, NULL },
             };

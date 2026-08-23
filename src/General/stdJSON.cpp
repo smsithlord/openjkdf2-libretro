@@ -142,6 +142,14 @@ static int stdJSON_WriteToFile(const char* pFpath, nlohmann::json& json_file)
         return 0;
     }
 
+    // std::ofstream, so this bypasses the HostServices file table entirely and
+    // needs its own guard. It is also the noisiest writer in the engine -- the
+    // cvar and bind saves go one key at a time, each a full read-modify-write
+    // of player/<name>/openjkdf2_cvars.json -- which is exactly the per-run
+    // churn that stops two processes sharing a basefolder.
+    if (PORTABLE_NO_WRITES())
+        return stdPlatform_PortableRefuse("json write", pFpath), 0;
+
     fs::path json_path = {pFpath};
     std::ofstream o(json_path);
     if (!o)

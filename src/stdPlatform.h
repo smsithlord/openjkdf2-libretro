@@ -59,6 +59,43 @@ uint32_t stdPlatform_GetTimeMsec();
 
 int stdConsolePrintf(const char *fmt, ...);
 
+//
+// Portable mode
+//
+// The engine writes into the game's basefolder: player/ profiles, the cvar and
+// bind JSON, registry.json, the session save. That is fine for a normal
+// install and wrong in three situations -- read-only media, a frontend that
+// owns its own save directory, and (the one that prompted this) running the
+// SAME test in several processes at once, where those writes are shared
+// mutable state and the runs trample each other.
+//
+// LEVELS, deliberately, so this can grow: the roadmap's "redirect writes into
+// GET_SAVE_DIRECTORY" is a natural third. OFF is the default and is
+// byte-identical to previous behaviour -- the predicate below compiles to a
+// constant 0 outside LIBRETRO_BUILD.
+//
+#define JKPORTABLE_OFF       (0)  // writes land in the basefolder, as always
+#define JKPORTABLE_NO_WRITES (1)  // refuse every write; create and modify nothing
+
+extern int stdPlatform_portableMode;
+
+#ifdef LIBRETRO_BUILD
+#define PORTABLE_NO_WRITES() (stdPlatform_portableMode >= JKPORTABLE_NO_WRITES)
+#else
+#define PORTABLE_NO_WRITES() (0)
+#endif
+
+// 1 if this fopen-style mode string asks for write access.
+int stdPlatform_ModeWrites(const char* pMode);
+
+// Record one refused write; always returns 0, so a caller can `return
+// stdPlatform_PortableRefuse(...)`. Logs the first few WITH THEIR PATH and
+// then goes quiet: a cvar save is one write per key, so logging all of them
+// would flood, but logging none would make an opt-in mode indistinguishable
+// from a bug. The count is readable afterwards.
+int stdPlatform_PortableRefuse(const char* pWhat, const char* pPath);
+int stdPlatform_PortableRefusedCount(void);
+
 #ifdef TARGET_TWL
 extern size_t trackingAllocsA;
 extern size_t trackingAllocsB;
