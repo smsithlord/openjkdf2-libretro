@@ -10,6 +10,7 @@
 #include "Primitives/rdMatrix.h"
 #include "Gameplay/sithTime.h"
 #include "Engine/rdCamera.h"
+#include "Main/jkCogFactory.h"
 #include "Engine/sithRender.h"
 #include "General/stdMath.h"
 #include "jk.h"
@@ -528,7 +529,12 @@ void sithCamera_Update(SithCamera *pCamera)
             sithCamera_g_vecCameraAngleOffset.z = 0.0;
         }
     }
-    
+
+    // Added: COG Factory free camera (devdocs/14). Re-applies a pinned pose
+    // AFTER the engine's own update, which is the only order that holds --
+    // whatever the camera type computed above would otherwise win. No-op
+    // unless the gate is on and a pose has been set.
+    jkCogFactory_CameraOverride(pCamera);
 }
 
 void sithCamera_RenderScene()

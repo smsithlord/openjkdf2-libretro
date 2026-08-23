@@ -149,6 +149,10 @@ typedef struct core_state_t
     char basefolder[1024];
     char episode_name[256]; /* ROM filename without extension (for later autostart) */
     char cmdline[512];
+    /* Last openjkdf2_cf_warp value consumed, so one `warp` warps once
+     * (core options are level state, not events). */
+    char cf_warp_last[128];
+    char cf_cam_last[128];
     bool is_mots;
 
     /* Core-owned absolute mouse position in window pixels. */
@@ -1165,6 +1169,35 @@ static void core_refresh_options(void)
         if (g_core.environ_cb && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
             want = strcmp(var.value, "enabled") == 0;
         jkCogFactory_SetEnabled(want);
+    }
+
+    /* Runtime player teleport for automated tests. A core option is just a
+     * frontend-owned string, so this needs no new ABI: the harness sets
+     * "x y z [yaw]" and we consume it once. Only meaningful with the gate on;
+     * a normal frontend never sets it and never sees it (it is not in the
+     * declared option list, so nothing offers it to a player). */
+    var.key = "openjkdf2_cf_warp";
+    var.value = NULL;
+    if (JKCF_ON() && g_core.environ_cb
+        && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var)
+        && var.value && var.value[0]
+        && strcmp(var.value, g_core.cf_warp_last) != 0)
+    {
+        snprintf(g_core.cf_warp_last, sizeof(g_core.cf_warp_last), "%s", var.value);
+        jkCogFactory_Warp(var.value);
+    }
+
+    /* Free camera, same channel. Unlike warp this is level state, not an
+     * event: it stays pinned until changed or cleared. */
+    var.key = "openjkdf2_cf_cam";
+    var.value = NULL;
+    if (JKCF_ON() && g_core.environ_cb
+        && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var)
+        && var.value
+        && strcmp(var.value, g_core.cf_cam_last) != 0)
+    {
+        snprintf(g_core.cf_cam_last, sizeof(g_core.cf_cam_last), "%s", var.value);
+        jkCogFactory_SetCam(var.value);
     }
 
     /* Direct-boot episode-type filter; the game mode itself always follows
