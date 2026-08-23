@@ -22,10 +22,26 @@
 int jkCogFactory_bEnabled = 0;
 
 /* A stock level has thousands of surfaces/things; a generated test level has
- * tens. Dump everything when the level is small enough to be ours, and only
+ * hundreds. Dump everything when the level is small enough to be ours, and only
  * the interesting rows otherwise, so turning the gate on against stock content
- * stays usable. */
-#define JKCF_DUMP_ALL_LIMIT 256
+ * stays usable.
+ *
+ * This was 256, and 256 was too small twice over. p09-modular-maze generated a
+ * 366-surface level -- modest for a generated level, tiny for a stock one --
+ * and got ZERO surface lines, because the >limit fallback filtered on
+ * SITH_SURFACE_COG_LINKED and this dump runs BEFORE the cog link sets it. Not
+ * truncated, no ellipsis: just "surfaces 366 (cog-linked only)" and straight on
+ * to things. So the diagnostic died silently at exactly the size where it
+ * starts being needed.
+ *
+ * Both halves are fixed: the limit is large enough for any plausible generated
+ * level, and the fallback filter is now a predicate that is actually TRUE of
+ * something at dump time. */
+#define JKCF_DUMP_ALL_LIMIT 4096
+
+/* Hard cap on printed rows, so a stock level cannot flood the log even when a
+ * filter matches broadly. Truncation is always announced. */
+#define JKCF_DUMP_ROW_CAP 4096
 
 void jkCogFactory_SetEnabled(int bEnabled)
 {
@@ -203,6 +219,30 @@ void jkCogFactory_CameraOverride(SithCamera* pCamera)
     rdMatrix_BuildRotate34(&pCamera->orient, &s_cam_pyr);
     pCamera->orient.scale = s_cam_pos;
 
+    /* lookPos/lookPYR are a SECOND copy of the same pose, written at
+     * sithCamera.c:370-371 -- i.e. before this override runs -- and the
+     * renderer reads THEM, not orient, for every visibility decision:
+     *
+     *   sithRender.c:785/1117/1357  the adjoin back-face test
+     *       rdMath_DistancePointToPlane(&pCurCamera->lookPos,
+     *                                   &adjoinSurface->...face.normal, v20)
+     *   sithRender.c:502            the per-sector distance reject
+     *   sithRender.c:1797           the surface back-face test
+     *
+     * Leave them stale and sector traversal is done from the PLAYER's position
+     * while the image is drawn from the pinned one. Every adjoin the player is
+     * behind is culled as back-facing, so the sector on the far side of it is
+     * never visited and renders as a flat black void with hard edges -- which
+     * is indistinguishable from a missing surface or a broken adjoin, and is
+     * exactly the symptom p09-modular-maze recorded and worked around with
+     * `warp` before `cam`. It goes away when the player happens to be in the
+     * same sector because then the two positions agree well enough.
+     *
+     * sithSoundMixer also pans 3D sound off lookPos, so this makes the pinned
+     * camera hear from where it looks, too. */
+    pCamera->lookPos = s_cam_pos;
+    rdMatrix_ExtractAngles34(&pCamera->orient, &pCamera->lookPYR);
+
     /* Resolve the sector EVERY frame from the pinned position. The renderer
      * culls and lights from cam->sector, so keeping the old one (the player's)
      * renders the world as seen from the player's room -- typically a black or
@@ -219,30 +259,43 @@ static void jkCogFactory_DumpSurfaces(SithWorld* pWorld)
     int shown = 0;
     int i;
 
+    /* The >limit filter is ADJOINS, not COG_LINKED. pAdjoin is populated by
+     * sithWorld's surface parser and is live by the time this runs; COG_LINKED
+     * is set by sithCog_Open, which runs later, so filtering on it printed
+     * nothing at all. Adjoins are also the right rows to keep: on a level too
+     * big to list, "where does this opening lead" is the question that survives. */
     jkCogFactory_Printf("surfaces %d (%s)", pWorld->numSurfaces,
-                        bAll ? "all" : "cog-linked only");
+                        bAll ? "all" : "adjoins only");
 
     for (i = 0; i < pWorld->numSurfaces; i++)
     {
         SithSurface* pSurf = &pWorld->surfaces[i];
         int bLinked = (pSurf->flags & SITH_SURFACE_COG_LINKED) != 0;
 
-        if (!bAll && !bLinked)
+        if (!bAll && !pSurf->pAdjoin)
             continue;
-        if (shown++ >= JKCF_DUMP_ALL_LIMIT)
+        if (shown++ >= JKCF_DUMP_ROW_CAP)
         {
-            jkCogFactory_Printf("surfaces ... (truncated)");
+            jkCogFactory_Printf("surfaces ... (truncated at %d rows of %d)",
+                                JKCF_DUMP_ROW_CAP, pWorld->numSurfaces);
             break;
         }
 
         /* flags is the field a generator most often gets wrong: a walkable
          * floor needs FLOOR|HAS_COLLISION (0x5), and COG_LINKED (0x2) is set
-         * by the cog link, not by the JKL. */
+         * by the cog link, not by the JKL.
+         *
+         * adjoin= is the DESTINATION SECTOR, not a bare yes/no. sithWorld.c:322
+         * computes it as `adjoin->sector = adjoin->mirror->surface->pSector`,
+         * so it is the resolved answer to "where does this opening lead" --
+         * the one adjoin fact a generator can get wrong while producing a level
+         * that loads, renders and tests green. A bare 1 said nothing. */
         jkCogFactory_Printf("surface %d flags=0x%x sector=%d adjoin=%d nverts=%d%s%s%s",
                             i,
                             pSurf->flags,
                             pSurf->pSector ? (int)pSurf->pSector->id : -1,
-                            pSurf->pAdjoin ? 1 : -1,
+                            (pSurf->pAdjoin && pSurf->pAdjoin->sector)
+                                ? (int)pSurf->pAdjoin->sector->id : -1,
                             pSurf->surfaceInfo.face.numVertices,
                             (pSurf->flags & SITH_SURFACE_FLOOR) ? " FLOOR" : "",
                             (pSurf->flags & SITH_SURFACE_HAS_COLLISION) ? " COLLIDE" : "",
