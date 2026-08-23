@@ -144,8 +144,13 @@ tools/*
 # RetroArch) stay ignored -- they are attended GUI binaries, not inputs.
 !tools/jkspec/
 !tools/cogfactory/
+!tools/cogarchive/
 !tools/DataMaster/
 !tools/Parsec/
+# ...but NOT the archive it builds. That is 540 retail COGs, 35 retail JKLs and
+# a derived index: extracted game data, regenerated in ~10 s by
+# `python tools/cogarchive/build.py`, and never committed.
+tools/cogarchive/archive/
 build_harness/
 harness_out/
 __pycache__/
