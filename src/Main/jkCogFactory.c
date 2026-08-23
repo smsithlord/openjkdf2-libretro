@@ -105,13 +105,19 @@ static void jkCogFactory_DumpSurfaces(SithWorld* pWorld)
 
 static void jkCogFactory_DumpThings(SithWorld* pWorld)
 {
-    int bAll = (pWorld->numThings <= JKCF_DUMP_ALL_LIMIT);
+    /* numThings is a HIGH-WATER INDEX, not a count: sithThing.c initialises it
+     * to -1 and raises it to the largest live slot. numThingsLoaded is the
+     * allocated capacity (the JKL's `World things N`). Iterate the capacity and
+     * skip free slots -- iterating numThings misses the last thing, and misses
+     * everything in a level whose only thing is index 0. */
+    int bAll = (pWorld->numThingsLoaded <= JKCF_DUMP_ALL_LIMIT);
     int i;
 
-    jkCogFactory_Printf("things %d/%d (%s)", pWorld->numThings, pWorld->numThingsLoaded,
+    jkCogFactory_Printf("things high_index=%d capacity=%d (%s)",
+                        pWorld->numThings, pWorld->numThingsLoaded,
                         bAll ? "all" : "players only");
 
-    for (i = 0; i < pWorld->numThings; i++)
+    for (i = 0; i < pWorld->numThingsLoaded; i++)
     {
         SithThing* pThing = &pWorld->aThings[i];
 

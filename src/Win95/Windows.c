@@ -11,6 +11,7 @@
 #include "Main/jkMain.h"
 #include "Main/jkStrings.h"
 #include "jk.h"
+#include "stdPlatform.h"
 #include "General/stdString.h"
 #include "Cog/sithCog.h"
 
@@ -269,8 +270,17 @@ int Windows_ErrorMsgboxWide(const char *a1, ...)
     //v4 = jkStrings_GetUniStringWithFallback("ERROR");
     stdString_WcharToChar(tmp, Text, 1024);
 
+#ifdef LIBRETRO_BUILD
+    /* A libretro core must never open a native modal dialog. There may be no
+     * user at the window (the core can run headless under a test harness), the
+     * box blocks the engine fiber indefinitely, and the frontend has its own
+     * OSD for exactly this. Route to the log chokepoint instead, which also
+     * makes engine errors visible to an automated test. (devdocs/14.) */
+    stdPlatform_Printf("ERROR: %s\n", tmp);
+#else
     jk_printf("ERROR: %s\n", tmp);
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Error", tmp, NULL);
+#endif
     return 0;
 #endif
 }
@@ -300,8 +310,17 @@ int Windows_ErrorMsgbox(const char *a1, ...)
 
     stdString_WcharToChar(tmp, Text, 512);
 
+#ifdef LIBRETRO_BUILD
+    /* A libretro core must never open a native modal dialog. There may be no
+     * user at the window (the core can run headless under a test harness), the
+     * box blocks the engine fiber indefinitely, and the frontend has its own
+     * OSD for exactly this. Route to the log chokepoint instead, which also
+     * makes engine errors visible to an automated test. (devdocs/14.) */
+    stdPlatform_Printf("ERROR: %s\n", tmp);
+#else
     jk_printf("ERROR: %s\n", tmp);
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Error", tmp, NULL);
+#endif
     return 0;
 #endif
 }
@@ -326,8 +345,13 @@ void Windows_GameErrorMsgbox(const char *a1, ...)
     jk_MessageBoxW(v2, Text, v3, 0x10u);
 #elif defined(SDL2_RENDER)
     vsnprintf(tmp, 0x200u, a1, va);
+#ifdef LIBRETRO_BUILD
+    /* Same reasoning as the error boxes above: no modal dialogs in a core. */
+    stdPlatform_Printf("FATAL ERROR: %s\n", tmp);
+#else
     jk_printf("FATAL ERROR: %s\n", tmp);
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Error", tmp, NULL);
+#endif
 
 #if !defined(ARCH_WASM)
     InstallHelper_CheckRequiredAssets(1);
