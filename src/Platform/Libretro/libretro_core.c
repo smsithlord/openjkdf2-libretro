@@ -154,6 +154,7 @@ typedef struct core_state_t
     char cf_warp_last[128];
     char cf_goto_last[128];
     char cf_cam_last[128];
+    char cf_timestep_last[128];
     bool is_mots;
 
     /* Core-owned absolute mouse position in window pixels. */
@@ -1215,6 +1216,21 @@ static void core_refresh_options(void)
         jkCogFactory_SetGoto(var.value);
     }
 
+    /* Fixed timestep: game time advances by an exact amount per retro_run
+     * instead of by however long the last one took. Level state like `cam` and
+     * `goto`, and the reason automated tests can be reproducible in DISTANCE
+     * rather than only in order. See jkCogFactory_SetTimestep. */
+    var.key = "openjkdf2_cf_timestep";
+    var.value = NULL;
+    if (JKCF_ON() && g_core.environ_cb
+        && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var)
+        && var.value
+        && strcmp(var.value, g_core.cf_timestep_last) != 0)
+    {
+        snprintf(g_core.cf_timestep_last, sizeof(g_core.cf_timestep_last), "%s", var.value);
+        jkCogFactory_SetTimestep(var.value);
+    }
+
     /* Direct-boot episode-type filter; the game mode itself always follows
      * the episode's own TYPE (jkSession_ResolveAutoBootMode). */
     var.key = "openjkdf2_boot_game_type";
@@ -1903,7 +1919,7 @@ static double core_current_speed(void)
 static int core_advance_time(void)
 {
     double now = core_now_seconds();
-    double real_dt, virtual_dt, ceiling;
+    double real_dt, virtual_dt, ceiling, fixed_dt;
     int n;
 
     if (!g_core.audio_clock_armed)
@@ -1924,14 +1940,37 @@ static int core_advance_time(void)
     if (real_dt > CORE_AUDIO_MAX_DT)
         real_dt = CORE_AUDIO_MAX_DT;
 
-    virtual_dt = real_dt * core_current_speed();
+    /* Fixed timestep (COG Factory gate, off by default and for tests only).
+     * The engine's whole clock is this one number, so pinning it here pins
+     * everything downstream that reads stdPlatform_GetTimeMsec -- and the one
+     * that matters most is NOT sithTime. jkMain's simulation gate is
+     * `GetTimeMsec() > jkMain_lastTickMs + TICKRATE_MS` (jkMain.c:239/364/742,
+     * TICKRATE_MS = 0 by default), so whether a frame ticks the simulation at
+     * all is a wall-clock decision: under --pace turbo a retro_run can finish
+     * in well under a millisecond, the virtual clock does not cross an integer
+     * ms, and the frame silently simulates nothing. Fixing sithTime's delta
+     * alone would leave that intact, and with it the turbo/realtime difference
+     * the fixed step exists to remove.
+     *
+     * Speed scaling and the ceiling are skipped on purpose: a caller that
+     * asked for an exact step gets the exact step, and fast-forward is now the
+     * frontend's cadence alone. */
+    fixed_dt = jkCogFactory_FixedStepSecs();
+    if (fixed_dt > 0.0)
+    {
+        virtual_dt = fixed_dt;
+    }
+    else
+    {
+        virtual_dt = real_dt * core_current_speed();
 
-    /* See CORE_NOMINAL_DT: never scale a step coarser than speed 1.0 would
-     * have produced. real_dt itself is always allowed, so normal play at any
-     * frame rate is untouched. */
-    ceiling = (real_dt > CORE_NOMINAL_DT) ? real_dt : CORE_NOMINAL_DT;
-    if (virtual_dt > ceiling)
-        virtual_dt = ceiling;
+        /* See CORE_NOMINAL_DT: never scale a step coarser than speed 1.0 would
+         * have produced. real_dt itself is always allowed, so normal play at any
+         * frame rate is untouched. */
+        ceiling = (real_dt > CORE_NOMINAL_DT) ? real_dt : CORE_NOMINAL_DT;
+        if (virtual_dt > ceiling)
+            virtual_dt = ceiling;
+    }
 
     g_core.virtual_ms += virtual_dt * 1000.0;
     g_core.speed_cur = (real_dt > 0.0) ? (virtual_dt / real_dt) : 1.0;

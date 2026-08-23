@@ -1,6 +1,7 @@
 #include "sithTime.h"
 
 #include "stdPlatform.h"
+#include "Main/jkCogFactory.h"
 
 #ifdef MICROSECOND_TIME
 static int64_t sithTime_deltaUs;
@@ -18,9 +19,69 @@ static size_t sithTime_deltaUs_history_collected_entries = 0;
 // Added
 flex_d_t sithTime_physicsRolloverFrames = 0.0;
 
+#ifdef LIBRETRO_BUILD
+/* Fractional millisecond carried between fixed-step frames. sithTime_g_frameTime
+ * is integer ms, so a 41.667 ms step would otherwise advance the millisecond
+ * game clock by 41 -- 1.6% slow, forever, which is deterministic but would make
+ * a COG's Sleep(1.0) cover 1.016 s of physics. With the carry, 24 frames add
+ * exactly 1000 ms and frameTime alternates 41/42 in a fixed, repeatable
+ * pattern. Reset wherever the clock itself is re-based. */
+static flex_d_t sithTime_fixedMsCarry = 0.0;
+
+/* The fixed-step substitute for sithTime_SetFrameTime.
+ *
+ * It deliberately does NOT call sithTime_SetFrameTime. Under MICROSECOND_TIME
+ * that function recomputes sithTime_g_frameTimeFlex -- the delta the physics
+ * integrates and the one sithMain divides into physics ticks -- from
+ * Linux_TimeUs(), ignoring the frameTime argument entirely. Handing it a fixed
+ * millisecond delta therefore fixes sithTime_g_frameTime and
+ * sithTime_g_msecGameTime and leaves the simulation exactly as wall-clock
+ * dependent as it was. Both paths have to be written here.
+ *
+ * DEBUGFLAG_SLOWMO is intentionally not applied: this exists to make a run
+ * reproducible, and the caller asked for a specific step. */
+static void sithTime_SetFixedFrameTime(flex_d_t stepSecs)
+{
+    int wholeMs;
+
+    /* Re-base both clocks every frame. Nothing here reads them, but CLEARING
+     * the fixed step must not hand the next real Advance() a delta the size of
+     * the entire fixed-step run -- that would clamp to SITHTIME_MAXDELTA and
+     * teleport every moving thing in the level on one frame. */
+    sithTime_g_clockTime = stdPlatform_GetTimeMsec();
+
+    sithTime_fixedMsCarry += stepSecs * 1000.0;
+    wholeMs = (int)sithTime_fixedMsCarry;
+    sithTime_fixedMsCarry -= (flex_d_t)wholeMs;
+
+    sithTime_g_frameTime = wholeMs;
+    sithTime_g_msecGameTime += wholeMs;
+    sithTime_g_frameTimeFlex = stepSecs;
+#ifdef MICROSECOND_TIME
+    sithTime_deltaUs = (int64_t)(stepSecs * 1000000.0);
+    sithTime_curUsAbsolute = Linux_TimeUs();
+#endif
+    sithTime_g_fps = 1.0 / sithTime_g_frameTimeFlex;
+    sithTime_g_secGameTime = (flex32_t)sithTime_g_msecGameTime * 0.001;
+}
+#endif // LIBRETRO_BUILD
+
 // MOTS altered
 void sithTime_Advance()
 {
+#ifdef LIBRETRO_BUILD
+    /* Gated behind the COG Factory debug mode and unset by default, so this is
+     * 0.0 -- and the line below is the stock one-liner -- for every normal
+     * session. See jkCogFactory_SetTimestep. */
+    {
+        flex_d_t fixedSecs = (flex_d_t)jkCogFactory_FixedStepSecs();
+        if (fixedSecs > 0.0)
+        {
+            sithTime_SetFixedFrameTime(fixedSecs);
+            return;
+        }
+    }
+#endif
     sithTime_SetFrameTime(stdPlatform_GetTimeMsec() - sithTime_g_clockTime);
 }
 
@@ -131,6 +192,9 @@ void sithTime_Startup()
     sithTime_g_clockTime = stdPlatform_GetTimeMsec();
 
     sithTime_physicsRolloverFrames = 0.0; // Added
+#ifdef LIBRETRO_BUILD
+    sithTime_fixedMsCarry = 0.0; // Added
+#endif
 }
 
 void sithTime_SetGameTime(uint32_t msecTime)
@@ -146,4 +210,7 @@ void sithTime_SetGameTime(uint32_t msecTime)
     sithTime_g_frameTime = 0;
     sithTime_g_secGameTime = (flex32_t)msecTime * 0.001;
     sithTime_g_clockTime = stdPlatform_GetTimeMsec();
+#ifdef LIBRETRO_BUILD
+    sithTime_fixedMsCarry = 0.0; // Added
+#endif
 }

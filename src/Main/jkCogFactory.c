@@ -528,6 +528,94 @@ int jkCogFactory_AutopilotAxis(int axisId, flex_t* pOut)
     return 0;
 }
 
+/* ------------------------------------------------------------ fixed step */
+/* Make game time advance by an exact amount per frame. See jkCogFactory.h for
+ * why, and sithTime_Advance/core_advance_time for the two places it lands. */
+
+static double s_ts_secs;   /* 0.0 == not engaged */
+
+int jkCogFactory_SetTimestep(const char* pSpec)
+{
+    double value = 0.0;
+    double ms;
+    double lo, hi;
+    char unit[16];
+    int n;
+
+    if (!jkCogFactory_bEnabled)
+        return 0;
+
+    /* Same sentinel discipline as `cam` and `goto`: compare the WHOLE string.
+     * A bare "-" clears; a leading '-' on a number does not (there is no such
+     * thing as a negative step, but the habit is what stops the p09 bug where
+     * every negative x silently released the camera). */
+    if (!pSpec || !pSpec[0] || (pSpec[0] == '-' && !pSpec[1])
+        || !strcmp(pSpec, "off"))
+    {
+        if (s_ts_secs > 0.0)
+            jkCogFactory_Printf("timestep: cleared -- game time follows the wall clock again");
+        s_ts_secs = 0.0;
+        return 1;
+    }
+
+    unit[0] = '\0';
+    n = sscanf(pSpec, "%lf %15s", &value, unit);
+    if (n < 1 || !(value > 0.0))
+    {
+        jkCogFactory_Printf("timestep: cannot parse '%s' (want \"<ms>\", \"<n>fps\" or \"off\")",
+                            pSpec);
+        return 0;
+    }
+
+    if (!unit[0] || !strcmp(unit, "ms") || !strcmp(unit, "msec"))
+    {
+        ms = value;
+    }
+    else if (!strcmp(unit, "fps") || !strcmp(unit, "hz") || !strcmp(unit, "Hz"))
+    {
+        ms = 1000.0 / value;
+    }
+    else
+    {
+        jkCogFactory_Printf("timestep: unknown unit '%s' in '%s' (want ms, fps or hz)",
+                            unit, pSpec);
+        return 0;
+    }
+
+    /* Refuse, do not clamp. sithTime_SetFrameTime clamps a wall-clock delta
+     * into SITHTIME_MINDELTA_US..MAXDELTA_US silently, which is right for a
+     * measurement and wrong for a REQUEST: a test that asks for a 0.5 ms step
+     * and is quietly given the floor would report frame counts for a step it
+     * never ran at. The extra 1 ms floor is because sithTime_g_frameTime is
+     * integer milliseconds -- below it the millisecond game clock stops
+     * advancing on most frames, which also stalls anything keyed on it (the
+     * autopilot's own per-frame stamp among them). */
+    lo = (double)SITHTIME_MINDELTA_US / 1000.0;
+    if (lo < 1.0)
+        lo = 1.0;
+    hi = (double)SITHTIME_MAXDELTA_US / 1000.0;
+    if (ms < lo || ms > hi)
+    {
+        jkCogFactory_Printf("timestep: REFUSED %.4f ms -- outside the engine's own delta "
+                            "clamp of %.3f..%.1f ms, which would silently clamp it to "
+                            "something other than what was asked for",
+                            ms, lo, hi);
+        return 0;
+    }
+
+    s_ts_secs = ms * 0.001;
+    jkCogFactory_Printf("timestep: FIXED at %.4f ms/frame (%.3f fps) -- game time no longer "
+                        "follows the wall clock", ms, 1000.0 / ms);
+    return 1;
+}
+
+double jkCogFactory_FixedStepSecs(void)
+{
+    if (!jkCogFactory_bEnabled)
+        return 0.0;
+    return s_ts_secs;
+}
+
 static void jkCogFactory_DumpSurfaces(SithWorld* pWorld)
 {
     int bAll = (pWorld->numSurfaces <= JKCF_DUMP_ALL_LIMIT);

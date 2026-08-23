@@ -83,9 +83,9 @@ void jkCogFactory_CameraOverride(SithCamera* pCamera);
  * `warp` teleports, which is exactly what you want for a screenshot and
  * exactly what you do not want for a test about MOVEMENT -- it skips the
  * physics, the collision and the adjoin traversal that are usually the thing
- * under test. Holding `w` for N frames is the alternative and it is worse:
- * distance is wall-clock derived and therefore not reproducible, and it only
- * goes in a straight line.
+ * under test. Holding `w` for N frames is the alternative and it is worse: it
+ * only goes in a straight line, and unless jkCogFactory_SetTimestep is engaged
+ * the distance is wall-clock derived and so not reproducible.
  *
  * This drives the same control axes the keyboard drives, so everything
  * downstream -- acceleration, drag, floor stick, slope handling, adjoin
@@ -109,12 +109,63 @@ int  jkCogFactory_SetGoto(const char* pSpec);
  * movement pipeline below it is untouched and cannot tell the difference. */
 int  jkCogFactory_AutopilotAxis(int axisId, flex_t* pOut);
 
+/* Fixed timestep: make game time advance by an exact amount per frame, so a
+ * test is reproducible in DISTANCE and not merely in order.
+ *
+ * The engine's clock is wall-clock derived -- sithTime_Advance() is
+ * `sithTime_SetFrameTime(stdPlatform_GetTimeMsec() - sithTime_g_clockTime)`
+ * (sithTime.c:24) -- so `key hold w 300` and `goto` walk a distance that
+ * depends on how fast the machine happened to be. Every settle and timeout
+ * budget in the test suite is therefore a guess, and the same script measured
+ * 590/584/551 autopilot ticks on three runs of p11-terrace.
+ *
+ * With this engaged, one frame is exactly one step of game time regardless of
+ * how long it took to compute, so `--pace turbo` and `--pace realtime` produce
+ * IDENTICAL results -- same frame counts, same final position, same
+ * screenshots -- while differing in wall-clock by a large factor.
+ *
+ * Accepted spellings, from the openjkdf2_cf_timestep core option:
+ *
+ *     "41.667"     milliseconds per frame
+ *     "41.667ms"   the same, spelled out
+ *     "24fps"      1/24 s per frame; "24 fps" and "24hz" also work
+ *     "off"        release it; "" and "-" do the same
+ *
+ * Bounded by the engine's own delta clamps (SITHTIME_MINDELTA_US ..
+ * SITHTIME_MAXDELTA_US, engine_config.h), with an extra 1 ms floor because
+ * sithTime_g_frameTime is integer milliseconds and would otherwise floor to
+ * zero. Out-of-range steps are REFUSED with a reason rather than clamped, so a
+ * test can never silently run at a step other than the one it asked for.
+ *
+ * Off unless set, and unset unless the gate is on: normal play never reaches
+ * any of this. */
+int jkCogFactory_SetTimestep(const char* pSpec);
+
+/* The engaged step in SECONDS, or 0.0 when not engaged (which is the answer
+ * whenever the gate is off). Two callers, and both are required:
+ *
+ *   - sithTime_Advance() substitutes it for the wall-clock delta. Note it must
+ *     bypass sithTime_SetFrameTime entirely: under MICROSECOND_TIME that
+ *     function recomputes sithTime_g_frameTimeFlex -- the delta the physics
+ *     actually integrates -- from Linux_TimeUs() and ignores its own argument,
+ *     so passing a fixed millisecond delta fixes the millisecond clock and
+ *     leaves the physics exactly as non-deterministic as before.
+ *
+ *   - retro_run's virtual clock advances by this instead of by real dt. That
+ *     is not redundant: jkMain's tick gate is `GetTimeMsec() > lastTick +
+ *     TICKRATE_MS` (jkMain.c:239/364/742), so whether a frame ticks the
+ *     simulation AT ALL is a wall-clock decision. Under turbo a retro_run can
+ *     take under a millisecond and skip the tick, which no amount of fixing
+ *     the delta would repair. */
+double jkCogFactory_FixedStepSecs(void);
+
 #else
 
 #define JKCF_ON() (0)
 #define jkCogFactory_SetEnabled(x)      do {} while (0)
 #define jkCogFactory_DumpWorld(x)       do {} while (0)
 #define jkCogFactory_CogLoadFailed(x,y) do {} while (0)
+#define jkCogFactory_FixedStepSecs()    (0.0)
 
 #endif /* LIBRETRO_BUILD */
 
