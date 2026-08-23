@@ -78,6 +78,37 @@ int jkCogFactory_Warp(const char* pSpec);
 int  jkCogFactory_SetCam(const char* pSpec);
 void jkCogFactory_CameraOverride(SithCamera* pCamera);
 
+/* Autopilot: walk the player to a place, by INPUT.
+ *
+ * `warp` teleports, which is exactly what you want for a screenshot and
+ * exactly what you do not want for a test about MOVEMENT -- it skips the
+ * physics, the collision and the adjoin traversal that are usually the thing
+ * under test. Holding `w` for N frames is the alternative and it is worse:
+ * distance is wall-clock derived and therefore not reproducible, and it only
+ * goes in a straight line.
+ *
+ * This drives the same control axes the keyboard drives, so everything
+ * downstream -- acceleration, drag, floor stick, slope handling, adjoin
+ * crossing -- happens exactly as it does for a human.
+ *
+ * "x y z [tol]", or "thing <index> [tol]" to chase a thing (drop a marker
+ * template at a waypoint and aim at that), or "off". From openjkdf2_cf_goto.
+ *
+ * It reports, once per event, on the [CF] channel: `arrived`, `stuck`,
+ * `voided` (no sector under the player -- which is the failure a human found
+ * in p11-terrace by falling through the floor), and `gave up`. Those four
+ * lines are the point: a test asserts on them rather than on a frame count.
+ *
+ * NOT a pathfinder. It steers straight at the target and walks. A wall between
+ * the two produces `stuck`, with the position, which is a useful answer. */
+int  jkCogFactory_SetGoto(const char* pSpec);
+
+/* Returns 1 and writes *pOut if the autopilot is driving this input function
+ * this frame; 0 to let the real device through. Called from sithControl's axis
+ * accessors, which is the narrowest possible injection point: the whole
+ * movement pipeline below it is untouched and cannot tell the difference. */
+int  jkCogFactory_AutopilotAxis(int axisId, flex_t* pOut);
+
 #else
 
 #define JKCF_ON() (0)

@@ -253,6 +253,259 @@ void jkCogFactory_CameraOverride(SithCamera* pCamera)
         pCamera->sector = pSector;
 }
 
+/* ------------------------------------------------------------- autopilot */
+/* Walk the player somewhere by INPUT rather than by teleporting.
+ *
+ * `warp` skips physics, collision and adjoin traversal -- which is right for a
+ * screenshot and wrong for any test about movement. Holding `w` for N frames is
+ * reproducible only in order, not in distance, because game time is wall-clock
+ * derived; and it only goes straight.
+ *
+ * This synthesises the same axis values the keyboard produces and lets the
+ * whole movement pipeline run untouched. It is not a pathfinder: it points at
+ * the target and walks, and a wall in between produces `stuck` with a position,
+ * which is a useful answer rather than a failure. */
+
+#define JKCF_GOTO_TURN_GAIN   (1.0f / 40.0f)  /* axis per degree of yaw error */
+#define JKCF_GOTO_FACE_DEG    50.0f           /* walk only when roughly facing */
+#define JKCF_GOTO_EASE        0.60f           /* ease off inside this radius */
+#define JKCF_GOTO_MIN_FWD     0.25f           /* ...but never below this */
+#define JKCF_GOTO_STILL_D     0.0025f         /* per-tick movement that counts */
+#define JKCF_GOTO_STILL_TICKS 120             /* ...for this long is "stuck" */
+#define JKCF_GOTO_DEFAULT_TOL 0.15f
+#define JKCF_GOTO_Z_TOL       0.60f           /* z is advisory: ramps handle it */
+#define JKCF_GOTO_LIMIT       3000            /* give up after this many ticks */
+
+static int       s_go_active;
+static int       s_go_thing = -1;      /* >= 0: chase a thing, else s_go_pos */
+static rdVector3 s_go_pos;
+static float     s_go_tol;
+static int       s_go_ticks;
+static int       s_go_still;
+static int       s_go_said;            /* bit per event, so each logs once */
+static rdVector3 s_go_last;
+static float     s_go_turn, s_go_fwd;
+static int       s_go_tick_stamp = -1;
+
+#define JKCF_SAID_STUCK  0x1
+#define JKCF_SAID_VOID   0x2
+
+static void jkCogFactory_GotoStop(const char* pWhy, SithThing* pLocal)
+{
+    if (pWhy && pLocal)
+        jkCogFactory_Printf("goto: %s at (%.4f %.4f %.4f) after %d ticks",
+                            pWhy, (double)pLocal->position.x,
+                            (double)pLocal->position.y,
+                            (double)pLocal->position.z, s_go_ticks);
+    s_go_active = 0;
+    s_go_turn = s_go_fwd = 0.0f;
+}
+
+int jkCogFactory_SetGoto(const char* pSpec)
+{
+    float tol = JKCF_GOTO_DEFAULT_TOL;
+    int idx;
+
+    if (!jkCogFactory_bEnabled)
+        return 0;
+
+    /* Same sentinel discipline as `cam`: test the WHOLE string, never just its
+     * first character, or every target with a negative x turns the thing off
+     * (jkCogFactory_SetCam's own bug, found by p09). */
+    if (!pSpec || !pSpec[0] || (pSpec[0] == '-' && !pSpec[1])
+        || !strcmp(pSpec, "off"))
+    {
+        if (s_go_active)
+            jkCogFactory_Printf("goto: cancelled");
+        s_go_active = 0;
+        s_go_thing = -1;
+        s_go_turn = s_go_fwd = 0.0f;
+        return 1;
+    }
+
+    if (sscanf(pSpec, "thing %d %f", &idx, &tol) >= 1)
+    {
+        s_go_thing = idx;
+        rdVector_Zero3(&s_go_pos);
+    }
+    else if (sscanf(pSpec, "%f %f %f %f", &s_go_pos.x, &s_go_pos.y, &s_go_pos.z,
+                    &tol) >= 3)
+    {
+        s_go_thing = -1;
+    }
+    else
+    {
+        jkCogFactory_Printf("goto: cannot parse '%s' (want \"x y z [tol]\", "
+                            "\"thing <index> [tol]\" or \"off\")", pSpec);
+        return 0;
+    }
+
+    s_go_tol = (tol > 0.0f) ? tol : JKCF_GOTO_DEFAULT_TOL;
+    s_go_active = 1;
+    s_go_ticks = 0;
+    s_go_still = 0;
+    s_go_said = 0;
+    s_go_turn = s_go_fwd = 0.0f;
+    s_go_tick_stamp = -1;
+    rdVector_Zero3(&s_go_last);
+
+    if (s_go_thing >= 0)
+        jkCogFactory_Printf("goto: chasing thing %d, tol %.3f", s_go_thing,
+                            (double)s_go_tol);
+    else
+        jkCogFactory_Printf("goto: heading for (%.4f %.4f %.4f), tol %.3f",
+                            (double)s_go_pos.x, (double)s_go_pos.y,
+                            (double)s_go_pos.z, (double)s_go_tol);
+    return 1;
+}
+
+/* Recompute the axes. Runs once per rendered frame -- the accessors below are
+ * called several times each and must not each advance the state machine. */
+static void jkCogFactory_GotoTick(SithThing* pLocal)
+{
+    SithWorld* pWorld = sithWorld_g_pCurrentWorld;
+    rdVector3 target = s_go_pos;
+    rdVector3 pyr;
+    float dx, dy, dz, dist2d, moved, want, err, fwd;
+
+    s_go_ticks++;
+
+    if (s_go_thing >= 0)
+    {
+        if (!pWorld || s_go_thing >= pWorld->numThingsLoaded
+            || pWorld->aThings[s_go_thing].type == SITH_THING_FREE)
+        {
+            jkCogFactory_Printf("goto: thing %d does not exist", s_go_thing);
+            jkCogFactory_GotoStop(NULL, NULL);
+            return;
+        }
+        target = pWorld->aThings[s_go_thing].position;
+    }
+
+    dx = target.x - pLocal->position.x;
+    dy = target.y - pLocal->position.y;
+    dz = target.z - pLocal->position.z;
+    dist2d = (float)sqrt((double)(dx * dx + dy * dy));
+
+    if (dist2d <= s_go_tol && (dz < JKCF_GOTO_Z_TOL && dz > -JKCF_GOTO_Z_TOL))
+    {
+        jkCogFactory_GotoStop("arrived", pLocal);
+        return;
+    }
+
+    /* Is the player still in the world at all? This is the check that exists
+     * because a human walked p11-terrace and fell through a floor: the level's
+     * own cog could not see it, because every assertion it made fired on a
+     * SECTOR CHANGE and a player in the void stops changing sector. */
+    if (pWorld && !sithSector_FindSectorAtPos(pWorld, &pLocal->position)
+        && !(s_go_said & JKCF_SAID_VOID))
+    {
+        s_go_said |= JKCF_SAID_VOID;
+        jkCogFactory_Printf("goto: VOIDED -- no sector at (%.4f %.4f %.4f), "
+                            "%.3f from target",
+                            (double)pLocal->position.x,
+                            (double)pLocal->position.y,
+                            (double)pLocal->position.z, (double)dist2d);
+    }
+
+    /* Not moving while being told to move. Reported once, and re-armed as soon
+     * as the player moves again, so a genuine pause does not flood the log. */
+    moved = (float)sqrt(
+        (double)((pLocal->position.x - s_go_last.x) * (pLocal->position.x - s_go_last.x)
+               + (pLocal->position.y - s_go_last.y) * (pLocal->position.y - s_go_last.y)
+               + (pLocal->position.z - s_go_last.z) * (pLocal->position.z - s_go_last.z)));
+    s_go_last = pLocal->position;
+    if (s_go_ticks > 2 && moved < JKCF_GOTO_STILL_D && s_go_fwd != 0.0f)
+    {
+        if (++s_go_still == JKCF_GOTO_STILL_TICKS && !(s_go_said & JKCF_SAID_STUCK))
+        {
+            SithSector* pSec = pWorld
+                ? sithSector_FindSectorAtPos(pWorld, &pLocal->position) : NULL;
+            s_go_said |= JKCF_SAID_STUCK;
+            jkCogFactory_Printf("goto: STUCK at (%.4f %.4f %.4f) sector %d, "
+                                "%.3f from target after %d ticks",
+                                (double)pLocal->position.x,
+                                (double)pLocal->position.y,
+                                (double)pLocal->position.z,
+                                pSec ? (int)pSec->id : -1,
+                                (double)dist2d, s_go_ticks);
+        }
+    }
+    else if (moved >= JKCF_GOTO_STILL_D)
+    {
+        s_go_still = 0;
+        s_go_said &= ~JKCF_SAID_STUCK;
+    }
+
+    if (s_go_ticks > JKCF_GOTO_LIMIT)
+    {
+        jkCogFactory_GotoStop("gave up", pLocal);
+        return;
+    }
+
+    /* Steering. Yaw 0 is +y and yaw 90 is -x -- counter-clockwise seen from
+     * above -- measured by p09 and confirmed four ways by p14, so the heading
+     * for yaw t is (-sin t, cos t) and the yaw that points at (dx, dy) is
+     * atan2(-dx, dy). */
+    want = (float)(atan2((double)(-dx), (double)dy) * (180.0 / 3.14159265358979323846));
+    rdMatrix_ExtractAngles34(&pLocal->orient, &pyr);
+    err = want - pyr.y;
+    while (err > 180.0f) err -= 360.0f;
+    while (err < -180.0f) err += 360.0f;
+
+    s_go_turn = err * JKCF_GOTO_TURN_GAIN;
+    if (s_go_turn > 1.0f) s_go_turn = 1.0f;
+    if (s_go_turn < -1.0f) s_go_turn = -1.0f;
+
+    /* Do not walk while pointing the wrong way, or the path is an arc that
+     * misses. Ease off near the target so the tolerance is reachable instead
+     * of being overshot every tick. */
+    if (err < JKCF_GOTO_FACE_DEG && err > -JKCF_GOTO_FACE_DEG)
+    {
+        fwd = dist2d / JKCF_GOTO_EASE;
+        if (fwd > 1.0f) fwd = 1.0f;
+        if (fwd < JKCF_GOTO_MIN_FWD) fwd = JKCF_GOTO_MIN_FWD;
+    }
+    else
+    {
+        fwd = 0.0f;
+    }
+    s_go_fwd = fwd;
+}
+
+int jkCogFactory_AutopilotAxis(int axisId, flex_t* pOut)
+{
+    SithThing* pLocal;
+
+    if (!jkCogFactory_bEnabled || !s_go_active || !pOut)
+        return 0;
+
+    pLocal = sithPlayer_g_pLocalPlayerThing;
+    if (!pLocal || !pLocal->sector)
+        return 0;
+
+    /* One state advance per frame, however many times the accessors are hit. */
+    if (sithTime_g_frameNumber != s_go_tick_stamp)
+    {
+        s_go_tick_stamp = sithTime_g_frameNumber;
+        jkCogFactory_GotoTick(pLocal);
+        if (!s_go_active)
+            return 0;
+    }
+
+    if (axisId == INPUT_FUNC_TURN)
+    {
+        *pOut = s_go_turn;
+        return 1;
+    }
+    if (axisId == INPUT_FUNC_FORWARD)
+    {
+        *pOut = s_go_fwd * JKCF_GOTO_FWD_SIGN;
+        return 1;
+    }
+    return 0;
+}
+
 static void jkCogFactory_DumpSurfaces(SithWorld* pWorld)
 {
     int bAll = (pWorld->numSurfaces <= JKCF_DUMP_ALL_LIMIT);
