@@ -109,6 +109,26 @@ int  jkCogFactory_SetGoto(const char* pSpec);
  * movement pipeline below it is untouched and cannot tell the difference. */
 int  jkCogFactory_AutopilotAxis(int axisId, flex_t* pOut);
 
+/* Ask the running engine a question, right now, without reloading anything.
+ *
+ * The level inventory dump (jkCogFactory_DumpWorld) is fired once, at load,
+ * which answers "what did the JKL contain" and nothing about what the world
+ * has become since. Every other diagnostic in this file is a one-way report on
+ * a schedule the engine chooses. When a test stops at a breakpoint and the
+ * question is "where is the player actually standing" or "did that sector's
+ * light really change", the only options were to add a Print() to a cog and
+ * rerun, or to read it out of a screenshot.
+ *
+ * "world", "player", "time", "thing <n>", "sector <n>", "surface <n>", from
+ * the openjkdf2_cf_probe core option. Answers on the [CF] channel like
+ * everything else, so `expect` can assert on a probe.
+ *
+ * NOTE the frontend appends a "#<seq>" the parser ignores. The option channel
+ * only fires on CHANGE, so without it, asking the same question twice would
+ * silently answer once -- which for an interactive debugging aid is the worst
+ * possible failure. */
+int jkCogFactory_Probe(const char* pSpec);
+
 /* Fixed timestep: make game time advance by an exact amount per frame, so a
  * test is reproducible in DISTANCE and not merely in order.
  *

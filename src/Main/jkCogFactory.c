@@ -782,6 +782,185 @@ static void jkCogFactory_DumpCogs(SithWorld* pWorld)
     }
 }
 
+/* ----------------------------------------------------------------- probe */
+/* On-demand introspection. See jkCogFactory.h for why this is not just the
+ * load-time dump again. */
+
+static void jkCogFactory_ProbePlayer(void)
+{
+    SithThing* p = sithPlayer_g_pLocalPlayerThing;
+    rdVector3 pyr;
+
+    if (!p)
+    {
+        jkCogFactory_Printf("probe player: no local player yet");
+        return;
+    }
+    rdMatrix_ExtractAngles34(&p->orient, &pyr);
+    jkCogFactory_Printf("probe player: pos=(%.4f %.4f %.4f) pyr=(%.2f %.2f %.2f) "
+                        "sector=%d type=%d move=%d flags=0x%x attach=0x%x",
+                        (double)p->position.x, (double)p->position.y,
+                        (double)p->position.z,
+                        (double)pyr.x, (double)pyr.y, (double)pyr.z,
+                        p->sector ? (int)p->sector->id : -1,
+                        p->type, p->moveType, p->flags, p->attach_flags);
+    if (p->moveType == SITH_MT_PHYSICS)
+    {
+        jkCogFactory_Printf("probe player: vel=(%.4f %.4f %.4f) physflags=0x%x",
+                            (double)p->physicsParams.vel.x,
+                            (double)p->physicsParams.vel.y,
+                            (double)p->physicsParams.vel.z,
+                            p->physicsParams.flags);
+    }
+}
+
+static void jkCogFactory_ProbeTime(void)
+{
+    /* The one probe that answers a question about the HARNESS's own contract:
+     * is the fixed step actually engaged, and is frameTimeFlex -- the delta the
+     * physics integrates -- really the value that was asked for, rather than a
+     * wall-clock measurement that merely looks close to it? */
+    jkCogFactory_Printf("probe time: frameTime=%u ms frameTimeFlex=%.6f s fps=%.3f "
+                        "msecGameTime=%u secGameTime=%.3f",
+                        (unsigned)sithTime_g_frameTime,
+                        (double)sithTime_g_frameTimeFlex,
+                        (double)sithTime_g_fps,
+                        (unsigned)sithTime_g_msecGameTime,
+                        (double)sithTime_g_secGameTime);
+    jkCogFactory_Printf("probe time: fixed step %s (%.4f ms requested)",
+                        s_ts_secs > 0.0 ? "ENGAGED" : "off",
+                        s_ts_secs * 1000.0);
+}
+
+static void jkCogFactory_ProbeThing(SithWorld* pWorld, int idx)
+{
+    SithThing* pThing;
+
+    if (!pWorld || idx < 0 || idx >= (int)pWorld->numThingsLoaded)
+    {
+        jkCogFactory_Printf("probe thing %d: out of range (capacity %d)", idx,
+                            pWorld ? (int)pWorld->numThingsLoaded : -1);
+        return;
+    }
+    pThing = &pWorld->aThings[idx];
+    if (pThing->type == SITH_THING_FREE)
+    {
+        jkCogFactory_Printf("probe thing %d: FREE slot", idx);
+        return;
+    }
+    jkCogFactory_Printf("probe thing %d: type=%d move=%d frames=%d tpl='%s' sector=%d "
+                        "pos=(%.4f %.4f %.4f) flags=0x%x",
+                        idx, pThing->type, pThing->moveType,
+                        pThing->moveType == SITH_MT_PATH
+                            ? pThing->trackParams.loadedFrames : 0,
+#ifdef SITH_DEBUG_STRUCT_NAMES
+                        pThing->pTemplate ? pThing->pTemplate->aName : "?",
+#else
+                        "?",
+#endif
+                        pThing->sector ? (int)pThing->sector->id : -1,
+                        (double)pThing->position.x, (double)pThing->position.y,
+                        (double)pThing->position.z, pThing->flags);
+}
+
+static void jkCogFactory_ProbeSector(SithWorld* pWorld, int idx)
+{
+    SithSector* pSec;
+    int nThings = 0;
+    SithThing* pT;
+
+    if (!pWorld || idx < 0 || idx >= (int)pWorld->numSectors)
+    {
+        jkCogFactory_Printf("probe sector %d: out of range (%d sectors)", idx,
+                            pWorld ? (int)pWorld->numSectors : -1);
+        return;
+    }
+    pSec = &pWorld->aSectors[idx];
+    for (pT = pSec->pFirstThingInSector; pT; pT = pT->pNextThingInSector)
+        nThings++;
+
+    /* ambientLight and extraLight are the two terms p07 had to separate by
+     * hand: ambient lights THINGS only and moves no surface pixel, extra is
+     * the one that reaches a surface. Printing both is the whole point. */
+    jkCogFactory_Printf("probe sector %d: ambient=%.4f extra=%.4f flags=0x%x "
+                        "surfaces=%d vertices=%d things=%d tint=(%.2f %.2f %.2f)",
+                        idx, (double)pSec->ambientLight, (double)pSec->extraLight,
+                        pSec->flags, (int)pSec->numSurfaces, (int)pSec->numVertices,
+                        nThings, (double)pSec->tint.x, (double)pSec->tint.y,
+                        (double)pSec->tint.z);
+}
+
+static void jkCogFactory_ProbeSurface(SithWorld* pWorld, int idx)
+{
+    SithSurface* pSurf;
+
+    if (!pWorld || idx < 0 || idx >= (int)pWorld->numSurfaces)
+    {
+        jkCogFactory_Printf("probe surface %d: out of range (%d surfaces)", idx,
+                            pWorld ? (int)pWorld->numSurfaces : -1);
+        return;
+    }
+    pSurf = &pWorld->surfaces[idx];
+    /* Unlike the load-time dump, COG_LINKED is meaningful here: the link has
+     * long since happened by the time anyone probes. */
+    jkCogFactory_Printf("probe surface %d: flags=0x%x sector=%d adjoin=%d nverts=%d%s%s%s",
+                        idx, pSurf->flags,
+                        pSurf->pSector ? (int)pSurf->pSector->id : -1,
+                        (pSurf->pAdjoin && pSurf->pAdjoin->sector)
+                            ? (int)pSurf->pAdjoin->sector->id : -1,
+                        pSurf->surfaceInfo.face.numVertices,
+                        (pSurf->flags & SITH_SURFACE_FLOOR) ? " FLOOR" : "",
+                        (pSurf->flags & SITH_SURFACE_HAS_COLLISION) ? " COLLIDE" : "",
+                        (pSurf->flags & SITH_SURFACE_COG_LINKED) ? " COGLINKED" : "");
+}
+
+int jkCogFactory_Probe(const char* pSpec)
+{
+    SithWorld* pWorld = sithWorld_g_pCurrentWorld;
+    int idx;
+
+    if (!jkCogFactory_bEnabled || !pSpec || !pSpec[0])
+        return 0;
+
+    if (!strncmp(pSpec, "world", 5))
+    {
+        if (!pWorld)
+            jkCogFactory_Printf("probe world: no world loaded");
+        else
+            jkCogFactory_DumpWorld(pWorld);
+        return 1;
+    }
+    if (!strncmp(pSpec, "player", 6))
+    {
+        jkCogFactory_ProbePlayer();
+        return 1;
+    }
+    if (!strncmp(pSpec, "time", 4))
+    {
+        jkCogFactory_ProbeTime();
+        return 1;
+    }
+    if (sscanf(pSpec, "thing %d", &idx) == 1)
+    {
+        jkCogFactory_ProbeThing(pWorld, idx);
+        return 1;
+    }
+    if (sscanf(pSpec, "sector %d", &idx) == 1)
+    {
+        jkCogFactory_ProbeSector(pWorld, idx);
+        return 1;
+    }
+    if (sscanf(pSpec, "surface %d", &idx) == 1)
+    {
+        jkCogFactory_ProbeSurface(pWorld, idx);
+        return 1;
+    }
+
+    jkCogFactory_Printf("probe: cannot parse '%s' (want world | player | time | "
+                        "thing <n> | sector <n> | surface <n>)", pSpec);
+    return 0;
+}
+
 void jkCogFactory_DumpWorld(SithWorld* pWorld)
 {
     if (!jkCogFactory_bEnabled || !pWorld)

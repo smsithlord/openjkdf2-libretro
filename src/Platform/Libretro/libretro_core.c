@@ -155,6 +155,7 @@ typedef struct core_state_t
     char cf_goto_last[128];
     char cf_cam_last[128];
     char cf_timestep_last[128];
+    char cf_probe_last[128];
     bool is_mots;
 
     /* Core-owned absolute mouse position in window pixels. */
@@ -1242,6 +1243,22 @@ static void core_refresh_options(void)
     {
         snprintf(g_core.cf_goto_last, sizeof(g_core.cf_goto_last), "%s", var.value);
         jkCogFactory_SetGoto(var.value);
+    }
+
+    /* On-demand introspection. Unlike warp (an event) or cam/goto/timestep
+     * (state), this is a QUESTION, and the frontend appends a "#<seq>" so that
+     * asking the same one twice is two distinct option values -- the channel
+     * only fires on change, and an introspection command that silently answers
+     * once and then goes quiet would be worse than not having it. */
+    var.key = "openjkdf2_cf_probe";
+    var.value = NULL;
+    if (JKCF_ON() && g_core.environ_cb
+        && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var)
+        && var.value && var.value[0]
+        && strcmp(var.value, g_core.cf_probe_last) != 0)
+    {
+        snprintf(g_core.cf_probe_last, sizeof(g_core.cf_probe_last), "%s", var.value);
+        jkCogFactory_Probe(var.value);
     }
 
     /* Fixed timestep: game time advances by an exact amount per retro_run
