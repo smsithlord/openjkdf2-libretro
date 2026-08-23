@@ -78,6 +78,29 @@ int jkCogFactory_Warp(const char* pSpec);
 int  jkCogFactory_SetCam(const char* pSpec);
 void jkCogFactory_CameraOverride(SithCamera* pCamera);
 
+/* Aim the player at a world point, exactly -- both angles.
+ *
+ * `warp x y z yaw` sets BODY yaw, which is only half of where the player is
+ * looking: head pitch is a separate field (actorParams.headPYR) that
+ * thing->orient never carries, and it is the half everything view-related
+ * reads. sithCogFunctionAI_ThingViewDot pre-rotates a copy of orient by
+ * headPYR for any ACTOR or PLAYER (sithCogFunctionAI.c:371-373), so a COG
+ * asking "is the player looking at this" sees a direction no `warp` can set.
+ * The only other way in is synthetic mouse deltas, which means calibrating the
+ * mouse binding's degrees-per-pixel before a test can express its own
+ * intention.
+ *
+ * "x y z", or "thing <n>" to aim at a thing, from openjkdf2_cf_look.
+ *
+ * Aims from the thing POSITION rather than the eye, because that is what
+ * ThingViewDot measures from -- so the achieved dot is exactly 1.0 and the
+ * rendered crosshair sits a little high (walkplayer's eyeoffset is 0.037).
+ * Clamps pitch to the player's own [minHeadPitch, maxHeadPitch] and says so.
+ * Reports the dot it actually achieved, computed the way the verb computes it:
+ * a self-check that costs one log line and makes a wrong sign impossible to
+ * miss. */
+int jkCogFactory_Look(const char* pSpec);
+
 /* Autopilot: walk the player to a place, by INPUT.
  *
  * `warp` teleports, which is exactly what you want for a screenshot and

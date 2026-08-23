@@ -152,6 +152,7 @@ typedef struct core_state_t
     /* Last openjkdf2_cf_warp value consumed, so one `warp` warps once
      * (core options are level state, not events). */
     char cf_warp_last[128];
+    char cf_look_last[128];
     char cf_goto_last[128];
     char cf_cam_last[128];
     char cf_timestep_last[128];
@@ -1216,6 +1217,20 @@ static void core_refresh_options(void)
     {
         snprintf(g_core.cf_warp_last, sizeof(g_core.cf_warp_last), "%s", var.value);
         jkCogFactory_Warp(var.value);
+    }
+
+    /* Aim the player, same channel, same one-shot shape as warp. `warp` sets
+     * body yaw; this sets body yaw AND head pitch, which is the half of "where
+     * is the player looking" that thing->orient does not carry. */
+    var.key = "openjkdf2_cf_look";
+    var.value = NULL;
+    if (JKCF_ON() && g_core.environ_cb
+        && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var)
+        && var.value && var.value[0]
+        && strcmp(var.value, g_core.cf_look_last) != 0)
+    {
+        snprintf(g_core.cf_look_last, sizeof(g_core.cf_look_last), "%s", var.value);
+        jkCogFactory_Look(var.value);
     }
 
     /* Free camera, same channel. Unlike warp this is level state, not an

@@ -12,6 +12,7 @@
 #include "World/sithSurface.h"
 #include "World/sithThing.h"
 #include "Gameplay/sithPlayer.h"
+#include "World/sithActor.h"
 #include "Engine/sithPhysics.h"
 #include "Engine/sithCamera.h"
 #include "Engine/rdCamera.h"
@@ -45,6 +46,10 @@ int jkCogFactory_bEnabled = 0;
 /* Hard cap on printed rows, so a stock level cannot flood the log even when a
  * filter matches broadly. Truncation is always announced. */
 #define JKCF_DUMP_ROW_CAP 4096
+
+/* math.h only defines M_PI when _USE_MATH_DEFINES is set, which it is not on
+ * every toolchain this builds under. */
+#define JKCF_RAD2DEG (57.29577951308232)
 
 void jkCogFactory_SetEnabled(int bEnabled)
 {
@@ -254,6 +259,157 @@ void jkCogFactory_CameraOverride(SithCamera* pCamera)
     pSector = sithSector_FindSectorAtPos(sithWorld_g_pCurrentWorld, &s_cam_pos);
     if (pSector)
         pCamera->sector = pSector;
+}
+
+/* ------------------------------------------------------------------ look */
+/* Aim the player at a world point, exactly.
+ *
+ * The player's VIEW direction is not one value. Body yaw lives in
+ * thing->orient; head pitch lives in actorParams.headPYR and is applied on top
+ * of it -- sithCogFunctionAI_ThingViewDot (sithCogFunctionAI.c:371-373) is the
+ * canonical reader, and it PreRotates a copy of orient by headPYR whenever the
+ * thing is an ACTOR or a PLAYER. So `warp x y z yaw` can only set half of it,
+ * and the other half was reachable only by feeding synthetic mouse deltas and
+ * hoping: a test that wants "look 12 degrees below the horizon at that panel"
+ * had to discover the pixels-per-degree of the mouse binding first.
+ *
+ * This solves for both angles from a target position and applies them, which
+ * makes any test about where the player is LOOKING as exact and as cheap as
+ * `warp` made tests about where the player is STANDING.
+ *
+ * Two details are load-bearing, and both were found by having the command
+ * report the dot it achieved rather than trusting the maths:
+ *
+ *   - It aims from the thing POSITION, not from the eye. ThingViewDot's
+ *     direction vector is (target - thing->position), and walkplayer's
+ *     eyeoffset is (0/0/0.037), so aiming from the rendered eye would produce
+ *     a dot that is very close to 1.0 and not equal to it. The crosshair
+ *     therefore sits a little above the aimed point; the COG-visible dot is
+ *     exactly 1.
+ *   - It clears SITH_AF_VIEWCENTRING. If that flag is up, sithControl's
+ *     centring branch (sithControl.c:1294-1313) walks head pitch back to zero
+ *     at 180 deg/sec on every frame with no pitch input -- so the pose would
+ *     be correct for one frame and then silently drift out from under the
+ *     test. */
+
+/* The look vector ThingViewDot will use for this thing: orient, pre-rotated by
+ * headPYR for actors and players. One function so `look` and `probe player`
+ * cannot disagree with the verb or with each other. */
+static void jkCogFactory_ViewLook(SithThing* pThing, rdVector3* pOut)
+{
+    rdMatrix34 m;
+
+    stdPlatform_Memcpy32(&m, &pThing->orient, sizeof(m));
+    if (pThing->type == SITH_THING_ACTOR || pThing->type == SITH_THING_PLAYER)
+        rdMatrix_PreRotate34(&m, &pThing->actorParams.headPYR);
+    *pOut = m.lvec;
+    rdVector_Normalize3Acc(pOut);
+}
+
+int jkCogFactory_Look(const char* pSpec)
+{
+    SithThing* pLocal;
+    SithThing* pTargetThing = NULL;
+    rdVector3 target, dir, pyr, lvec;
+    double horiz, yaw, pitch, wanted, dot;
+    int idx, n, bClamped = 0;
+
+    if (!jkCogFactory_bEnabled || !pSpec || !pSpec[0])
+        return 0;
+
+    pLocal = sithPlayer_g_pLocalPlayerThing;
+    if (!pLocal)
+    {
+        jkCogFactory_Printf("look: no local player yet");
+        return 0;
+    }
+
+    if (sscanf(pSpec, "thing %d", &idx) == 1)
+    {
+        SithWorld* pWorld = sithWorld_g_pCurrentWorld;
+        if (!pWorld || idx < 0 || idx >= (int)pWorld->numThingsLoaded
+            || pWorld->aThings[idx].type == SITH_THING_FREE)
+        {
+            jkCogFactory_Printf("look: thing %d does not exist", idx);
+            return 0;
+        }
+        pTargetThing = &pWorld->aThings[idx];
+        target = pTargetThing->position;
+    }
+    else
+    {
+        n = sscanf(pSpec, "%f %f %f", &target.x, &target.y, &target.z);
+        if (n < 3)
+        {
+            jkCogFactory_Printf("look: cannot parse '%s' (want \"x y z\" or \"thing <n>\")",
+                                pSpec);
+            return 0;
+        }
+    }
+
+    rdVector_Sub3(&dir, &target, &pLocal->position);
+    horiz = sqrt((double)dir.x * dir.x + (double)dir.y * dir.y);
+    if (horiz == 0.0 && dir.z == 0.0)
+    {
+        jkCogFactory_Printf("look: target is the player's own position; refusing");
+        return 0;
+    }
+
+    /* rdMatrix_Build34 (rdMatrix.c:30-32) defines the convention:
+     *     lvec = (-sin(yaw)cos(pitch), cos(yaw)cos(pitch), sin(pitch))
+     * so yaw 0 faces +y, yaw 90 faces -x, and POSITIVE pitch looks UP. */
+    yaw   = atan2(-(double)dir.x, (double)dir.y) * JKCF_RAD2DEG;
+    pitch = atan2((double)dir.z, horiz) * JKCF_RAD2DEG;
+
+    wanted = pitch;
+    if (pitch < (double)pLocal->actorParams.minHeadPitch)
+    {
+        pitch = (double)pLocal->actorParams.minHeadPitch;
+        bClamped = 1;
+    }
+    if (pitch > (double)pLocal->actorParams.maxHeadPitch)
+    {
+        pitch = (double)pLocal->actorParams.maxHeadPitch;
+        bClamped = 1;
+    }
+
+    pyr.x = 0.0f;
+    pyr.y = (float)yaw;
+    pyr.z = 0.0f;
+    rdMatrix_BuildRotate34(&pLocal->orient, &pyr);
+
+    pyr.x = (float)pitch;
+    pyr.y = 0.0f;
+    pyr.z = 0.0f;
+    sithActor_SetHeadPYR(pLocal, &pyr);
+    pLocal->actorParams.flags &= ~SITH_AF_VIEWCENTRING;
+
+    sithCamera_Update(sithCamera_g_pCurCamera);
+
+    /* Report the dot actually achieved, computed the way the verb computes it.
+     * A command that says "I aimed there" is a claim; a command that says
+     * "dot=1.0000" is a measurement, and it is what caught the sign of pitch
+     * and the eye-vs-position offset without a single extra run. */
+    jkCogFactory_ViewLook(pLocal, &lvec);
+    rdVector_Normalize3Acc(&dir);
+    dot = (double)lvec.x * dir.x + (double)lvec.y * dir.y + (double)lvec.z * dir.z;
+
+    /* Target and dot ADJACENT, angles after. A test wants to assert two things
+     * -- which point, and that the aim landed on it -- and `expect` is a
+     * single substring match, so they have to be neighbours on the line. The
+     * solved angles are for a human: they are float32 trigonometry and the
+     * last decimal moves with the player's settled z, so a test that pinned
+     * them would fail on a rounding difference and look like a real defect.
+     * (It did, on this project's first control run.) */
+    jkCogFactory_Printf("look: at (%.4f %.4f %.4f) dot=%.4f%s yaw=%.4f pitch=%.4f",
+                        (double)target.x, (double)target.y, (double)target.z,
+                        dot, bClamped ? " CLAMPED" : "", yaw, pitch);
+    if (bClamped)
+        jkCogFactory_Printf("look: pitch %.4f is outside the player's head range "
+                            "[%.2f %.2f]; aimed as close as the engine allows",
+                            wanted, (double)pLocal->actorParams.minHeadPitch,
+                            (double)pLocal->actorParams.maxHeadPitch);
+    return 1;
 }
 
 /* ------------------------------------------------------------- autopilot */
@@ -804,6 +960,31 @@ static void jkCogFactory_ProbePlayer(void)
                         (double)pyr.x, (double)pyr.y, (double)pyr.z,
                         p->sector ? (int)p->sector->id : -1,
                         p->type, p->moveType, p->flags, p->attach_flags);
+    /* The pyr above is BODY orientation only -- it is extracted from ->orient,
+     * and head pitch is a separate field that ->orient never carries. Anything
+     * asking "where is the player looking" reads the composite
+     * (sithCogFunctionAI_ThingViewDot pre-rotates orient by headPYR), so a
+     * probe that printed only the body was quietly answering a question nobody
+     * asked: a test could pitch the view 40 degrees down and see no change at
+     * all in the probe. lvec is that composite, normalized -- the exact vector
+     * ThingViewDot dots against, so a dot can be recomputed from the log. */
+    if (p->type == SITH_THING_ACTOR || p->type == SITH_THING_PLAYER)
+    {
+        rdVector3 lvec;
+        jkCogFactory_ViewLook(p, &lvec);
+        jkCogFactory_Printf("probe player: headpyr=(%.4f %.4f %.4f) "
+                            "pitchrange=[%.2f %.2f] lvec=(%.4f %.4f %.4f) "
+                            "eyeoffset=(%.4f %.4f %.4f)",
+                            (double)p->actorParams.headPYR.x,
+                            (double)p->actorParams.headPYR.y,
+                            (double)p->actorParams.headPYR.z,
+                            (double)p->actorParams.minHeadPitch,
+                            (double)p->actorParams.maxHeadPitch,
+                            (double)lvec.x, (double)lvec.y, (double)lvec.z,
+                            (double)p->actorParams.eyeOffset.x,
+                            (double)p->actorParams.eyeOffset.y,
+                            (double)p->actorParams.eyeOffset.z);
+    }
     if (p->moveType == SITH_MT_PHYSICS)
     {
         jkCogFactory_Printf("probe player: vel=(%.4f %.4f %.4f) physflags=0x%x",
