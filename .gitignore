@@ -143,7 +143,10 @@ tools/*
 # and the licensing caveat. The other tool folders (ZED, ConMan, Mat16,
 # RetroArch) stay ignored -- they are attended GUI binaries, not inputs.
 !tools/jkspec/
+!tools/cogfactory/
 !tools/DataMaster/
 !tools/Parsec/
 build_harness/
 harness_out/
+__pycache__/
+*.pyc
