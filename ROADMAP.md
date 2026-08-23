@@ -256,6 +256,30 @@ and does nothing, with a clean log:
       floors (`flags=0x7 FLOOR COLLIDE COGLINKED`) — the exact pattern the
       factory's first target needs, confirmed in shipped content.
 
+## COG Factory prototype (devdocs/15) — GOAL MET
+
+`tools/cogfactory` + `tools/jkspec`. The driving goal works: **a piano you can
+walk on, generated end to end** — 8 cog-linked floor keys, each playing its own
+note, asserted headlessly.
+
+- [x] p01: a root-loose `cog/` file beats the GOB; COG `Print()` reaches
+      `expect` (with the debug gate); **regenerated content reloads without a
+      process restart** — the inner loop is warm.
+- [x] p02: minimum loadable JKL, generated from scratch. Found that
+      under-sized resource pools *segfault*, and that a **phantom episode**
+      works — so no GOB writer is needed, ever.
+- [x] p03: the piano. `entered` reaches a COG for the player; `GetSenderID()`
+      is the linkid, so the handler is a pure index dispatch; one sample
+      pitched into a scale via `ChangeSoundPitch`.
+- [x] `tools/jkspec`: DataMaster + Parsec `Data.dat` + engine scrape merged —
+      599 verbs, 450 with arity/types, per-claim confidence tags.
+- [x] Core fix along the way: **no native modal dialogs in a core** (they block
+      a headless run indefinitely and never reach the log).
+
+Next phase is designed from evidence in devdocs/15, headed by a higher-level
+scene description compiled down to JKL — the three `gen.py` files now share
+~120 lines of near-identical geometry code, which is the signal to lift it.
+
 ## M1 — playable v1 (finish line for "it's a real core")
 
 ### Hide/neutralize features that can't work under a frontend
