@@ -22,6 +22,7 @@
 #include "Dss/sithMulti.h"
 #include "General/stdMath.h"
 #include "jk.h"
+#include "Main/jkCogFactory.h"
 
 // Added
 static int sithControl_followingPlayer = 0;
@@ -750,6 +751,19 @@ void sithControl_FinishRead()
 
 flex_t sithControl_GetKeyAsAxisNormalized(int axisId)
 {
+#ifdef LIBRETRO_BUILD
+    /* COG Factory autopilot. The narrowest possible injection point for
+     * "walk the player somewhere by input": everything below this line --
+     * acceleration, drag, floor stick, slope handling, adjoin crossing --
+     * runs exactly as it does for a human, and cannot tell the difference.
+     * A no-op unless the gate is on and a `goto` target has been set. */
+    {
+        flex_t jkcfOverride;
+        if (jkCogFactory_AutopilotAxis(axisId, &jkcfOverride))
+            return jkcfOverride;
+    }
+#endif
+
     uint32_t v1; // ebp
     stdControlKeyInfoEntry *entryIter; // esi
     int v3; // ebx
@@ -818,6 +832,19 @@ LABEL_23:
 
 flex_t sithControl_GetKeyAsAxis(int axisId)
 {
+#ifdef LIBRETRO_BUILD
+    /* COG Factory autopilot. The narrowest possible injection point for
+     * "walk the player somewhere by input": everything below this line --
+     * acceleration, drag, floor stick, slope handling, adjoin crossing --
+     * runs exactly as it does for a human, and cannot tell the difference.
+     * A no-op unless the gate is on and a `goto` target has been set. */
+    {
+        flex_t jkcfOverride;
+        if (jkCogFactory_AutopilotAxis(axisId, &jkcfOverride))
+            return jkcfOverride;
+    }
+#endif
+
     uint32_t v1; // ebp
     stdControlKeyInfoEntry *v2; // esi
     int v3; // ebx

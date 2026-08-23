@@ -152,6 +152,7 @@ typedef struct core_state_t
     /* Last openjkdf2_cf_warp value consumed, so one `warp` warps once
      * (core options are level state, not events). */
     char cf_warp_last[128];
+    char cf_goto_last[128];
     char cf_cam_last[128];
     bool is_mots;
 
@@ -1198,6 +1199,20 @@ static void core_refresh_options(void)
     {
         snprintf(g_core.cf_cam_last, sizeof(g_core.cf_cam_last), "%s", var.value);
         jkCogFactory_SetCam(var.value);
+    }
+
+    /* Autopilot: walk the player somewhere by synthesised input. Level state
+     * like `cam`, not a one-shot event like `warp` -- it stays engaged until it
+     * arrives, gives up, or is cleared. */
+    var.key = "openjkdf2_cf_goto";
+    var.value = NULL;
+    if (JKCF_ON() && g_core.environ_cb
+        && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var)
+        && var.value
+        && strcmp(var.value, g_core.cf_goto_last) != 0)
+    {
+        snprintf(g_core.cf_goto_last, sizeof(g_core.cf_goto_last), "%s", var.value);
+        jkCogFactory_SetGoto(var.value);
     }
 
     /* Direct-boot episode-type filter; the game mode itself always follows

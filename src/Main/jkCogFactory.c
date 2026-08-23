@@ -18,6 +18,9 @@
 #include "Primitives/rdMatrix.h"
 #include "Primitives/rdVector.h"
 #include "Cog/sithCog.h"
+#include "Gameplay/sithTime.h"
+#include "types_enums.h"
+#include <math.h>
 
 int jkCogFactory_bEnabled = 0;
 
@@ -285,7 +288,17 @@ static int       s_go_still;
 static int       s_go_said;            /* bit per event, so each logs once */
 static rdVector3 s_go_last;
 static float     s_go_turn, s_go_fwd;
-static int       s_go_tick_stamp = -1;
+static uint32_t  s_go_tick_stamp;
+static int       s_go_ticked;
+/* Every goto gets a number, and every line it prints carries it.
+ *
+ * `expect` matches any line logged at ANY point in the session, so three legs
+ * that all report "goto: arrived" are indistinguishable: the second and third
+ * assertions match the FIRST leg's line and pass instantly whatever happened.
+ * This test did exactly that on its first green run -- legs 2 and 3 "passed"
+ * while the player was still walking leg 2. p12 hit the same trap through a
+ * prefix collision; this is the same hazard wearing different clothes. */
+static int       s_go_seq;
 
 #define JKCF_SAID_STUCK  0x1
 #define JKCF_SAID_VOID   0x2
@@ -293,8 +306,8 @@ static int       s_go_tick_stamp = -1;
 static void jkCogFactory_GotoStop(const char* pWhy, SithThing* pLocal)
 {
     if (pWhy && pLocal)
-        jkCogFactory_Printf("goto: %s at (%.4f %.4f %.4f) after %d ticks",
-                            pWhy, (double)pLocal->position.x,
+        jkCogFactory_Printf("goto #%d: %s at (%.4f %.4f %.4f) after %d ticks",
+                            s_go_seq, pWhy, (double)pLocal->position.x,
                             (double)pLocal->position.y,
                             (double)pLocal->position.z, s_go_ticks);
     s_go_active = 0;
@@ -316,7 +329,7 @@ int jkCogFactory_SetGoto(const char* pSpec)
         || !strcmp(pSpec, "off"))
     {
         if (s_go_active)
-            jkCogFactory_Printf("goto: cancelled");
+            jkCogFactory_Printf("goto #%d: cancelled", s_go_seq);
         s_go_active = 0;
         s_go_thing = -1;
         s_go_turn = s_go_fwd = 0.0f;
@@ -341,19 +354,20 @@ int jkCogFactory_SetGoto(const char* pSpec)
     }
 
     s_go_tol = (tol > 0.0f) ? tol : JKCF_GOTO_DEFAULT_TOL;
+    s_go_seq++;
     s_go_active = 1;
     s_go_ticks = 0;
     s_go_still = 0;
     s_go_said = 0;
     s_go_turn = s_go_fwd = 0.0f;
-    s_go_tick_stamp = -1;
+    s_go_ticked = 0;
     rdVector_Zero3(&s_go_last);
 
     if (s_go_thing >= 0)
-        jkCogFactory_Printf("goto: chasing thing %d, tol %.3f", s_go_thing,
+        jkCogFactory_Printf("goto #%d: chasing thing %d, tol %.3f", s_go_seq, s_go_thing,
                             (double)s_go_tol);
     else
-        jkCogFactory_Printf("goto: heading for (%.4f %.4f %.4f), tol %.3f",
+        jkCogFactory_Printf("goto #%d: heading for (%.4f %.4f %.4f), tol %.3f", s_go_seq,
                             (double)s_go_pos.x, (double)s_go_pos.y,
                             (double)s_go_pos.z, (double)s_go_tol);
     return 1;
@@ -375,7 +389,7 @@ static void jkCogFactory_GotoTick(SithThing* pLocal)
         if (!pWorld || s_go_thing >= pWorld->numThingsLoaded
             || pWorld->aThings[s_go_thing].type == SITH_THING_FREE)
         {
-            jkCogFactory_Printf("goto: thing %d does not exist", s_go_thing);
+            jkCogFactory_Printf("goto #%d: thing %d does not exist", s_go_seq, s_go_thing);
             jkCogFactory_GotoStop(NULL, NULL);
             return;
         }
@@ -401,8 +415,8 @@ static void jkCogFactory_GotoTick(SithThing* pLocal)
         && !(s_go_said & JKCF_SAID_VOID))
     {
         s_go_said |= JKCF_SAID_VOID;
-        jkCogFactory_Printf("goto: VOIDED -- no sector at (%.4f %.4f %.4f), "
-                            "%.3f from target",
+        jkCogFactory_Printf("goto #%d: VOIDED -- no sector at (%.4f %.4f %.4f), "
+                            "%.3f from target", s_go_seq,
                             (double)pLocal->position.x,
                             (double)pLocal->position.y,
                             (double)pLocal->position.z, (double)dist2d);
@@ -422,8 +436,8 @@ static void jkCogFactory_GotoTick(SithThing* pLocal)
             SithSector* pSec = pWorld
                 ? sithSector_FindSectorAtPos(pWorld, &pLocal->position) : NULL;
             s_go_said |= JKCF_SAID_STUCK;
-            jkCogFactory_Printf("goto: STUCK at (%.4f %.4f %.4f) sector %d, "
-                                "%.3f from target after %d ticks",
+            jkCogFactory_Printf("goto #%d: STUCK at (%.4f %.4f %.4f) sector %d, "
+                                "%.3f from target after %d ticks", s_go_seq,
                                 (double)pLocal->position.x,
                                 (double)pLocal->position.y,
                                 (double)pLocal->position.z,
@@ -484,10 +498,13 @@ int jkCogFactory_AutopilotAxis(int axisId, flex_t* pOut)
     if (!pLocal || !pLocal->sector)
         return 0;
 
-    /* One state advance per frame, however many times the accessors are hit. */
-    if (sithTime_g_frameNumber != s_go_tick_stamp)
+    /* One state advance per frame, however many times the accessors are hit --
+     * sithControl calls each of them more than once per frame. There is no
+     * frame counter in sithTime, so the game clock is the stamp. */
+    if (!s_go_ticked || sithTime_g_msecGameTime != s_go_tick_stamp)
     {
-        s_go_tick_stamp = sithTime_g_frameNumber;
+        s_go_tick_stamp = sithTime_g_msecGameTime;
+        s_go_ticked = 1;
         jkCogFactory_GotoTick(pLocal);
         if (!s_go_active)
             return 0;
@@ -500,7 +517,12 @@ int jkCogFactory_AutopilotAxis(int axisId, flex_t* pOut)
     }
     if (axisId == INPUT_FUNC_FORWARD)
     {
-        *pOut = s_go_fwd * JKCF_GOTO_FWD_SIGN;
+        /* MEASURED, not reasoned. The comment here first said the axis had to
+         * be negated -- read off sithControl's `-GetKeyAsAxisNormalized(...)`
+         * in a nearby function -- and asserted it was verified. It was not:
+         * the first autowalk run drove the player 0.54 units SOUTH of a target
+         * to the north and reported STUCK. Positive is forward. */
+        *pOut = s_go_fwd;
         return 1;
     }
     return 0;
