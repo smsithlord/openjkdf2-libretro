@@ -1178,15 +1178,38 @@ static void jkCogFactory_ProbeSurface(SithWorld* pWorld, int idx)
     pSurf = &pWorld->surfaces[idx];
     /* Unlike the load-time dump, COG_LINKED is meaningful here: the link has
      * long since happened by the time anyone probes. */
-    jkCogFactory_Printf("probe surface %d: flags=0x%x sector=%d adjoin=%d nverts=%d%s%s%s",
-                        idx, pSurf->flags,
-                        pSurf->pSector ? (int)pSurf->pSector->id : -1,
-                        (pSurf->pAdjoin && pSurf->pAdjoin->sector)
-                            ? (int)pSurf->pAdjoin->sector->id : -1,
-                        pSurf->surfaceInfo.face.numVertices,
-                        (pSurf->flags & SITH_SURFACE_FLOOR) ? " FLOOR" : "",
-                        (pSurf->flags & SITH_SURFACE_HAS_COLLISION) ? " COLLIDE" : "",
-                        (pSurf->flags & SITH_SURFACE_COG_LINKED) ? " COGLINKED" : "");
+    {
+        rdMaterial* pMat = pSurf->surfaceInfo.face.material;
+        /* THE MATERIAL AND THE CEL, which no COG verb between them can tell
+         * you the whole of. p19 lost time to both halves:
+         *
+         *   * `SetWallCel(s, n)` does NOTHING AT ALL when n >= num_texinfo
+         *     (sithCogFunctionSurface.c:191) -- it pushes -1 and leaves the
+         *     surface as it was. `num_texinfo` is not exposed to COG by any
+         *     verb, so a cog cannot tell "the cel changed" from "the cel is
+         *     out of range" except by reading the value back afterwards.
+         *   * `wallCel` DEFAULTS TO -1 (rdFace.c:26), which the renderer
+         *     draws as cel 0 (sithRender.c:1809-1812) and GetWallCel reports
+         *     as -1 -- so a surface that was never written looks correct and
+         *     reads back wrong.
+         *
+         * `mat` is the index into the level's own SECTION: MATERIALS, the
+         * same number GetSurfaceMaterial pushes, so it is checkable straight
+         * against the JKL a generator wrote. */
+        jkCogFactory_Printf("probe surface %d: flags=0x%x sector=%d adjoin=%d nverts=%d "
+                            "mat=%d cel=%d cels=%d%s%s%s",
+                            idx, pSurf->flags,
+                            pSurf->pSector ? (int)pSurf->pSector->id : -1,
+                            (pSurf->pAdjoin && pSurf->pAdjoin->sector)
+                                ? (int)pSurf->pAdjoin->sector->id : -1,
+                            pSurf->surfaceInfo.face.numVertices,
+                            pMat ? (int)(pMat - pWorld->aMaterials) : -1,
+                            pSurf->surfaceInfo.face.wallCel,
+                            pMat ? (int)pMat->num_texinfo : -1,
+                            (pSurf->flags & SITH_SURFACE_FLOOR) ? " FLOOR" : "",
+                            (pSurf->flags & SITH_SURFACE_HAS_COLLISION) ? " COLLIDE" : "",
+                            (pSurf->flags & SITH_SURFACE_COG_LINKED) ? " COGLINKED" : "");
+    }
 }
 
 int jkCogFactory_Probe(const char* pSpec)
