@@ -20,6 +20,9 @@
 #include "Primitives/rdVector.h"
 #include "Cog/sithCog.h"
 #include "Gameplay/sithTime.h"
+#include "Gameplay/sithInventory.h"
+#include "World/sithWeapon.h"
+#include "Devices/sithControl.h"
 #include "types_enums.h"
 #include <math.h>
 
@@ -995,6 +998,97 @@ static void jkCogFactory_ProbePlayer(void)
     }
 }
 
+/* `probe input` -- the player's INPUT STATE, which is a different question from
+ * `probe player`'s POSE.
+ *
+ * Added for p18-remotecontrol, the way `look` was added for p15. That project
+ * asks how much of the player's input a LEVEL COG can read, and every answer it
+ * finds is a COG reading a thing field: GetThingThrust is
+ * physicsParams.acceleration (sithCogFunctionThing.c:1669), GetThingRotVel is
+ * physicsParams.angularVelocity (:1915), the duck key is SITH_PF_CROUCHING in
+ * physicsParams.flags (sithControl.c:1546-1559), and primary/secondary fire is
+ * the file-static sithWeapon_CurWeaponMode.
+ *
+ * Printing those is only half of it. The second line is what the ENGINE'S INPUT
+ * LAYER saw -- sithControl_GetKey per input function, straight out of
+ * stdControl's key table -- so a test can assert that the cog's reading and the
+ * key that caused it agree WITHOUT deriving one from the other. Without it the
+ * only oracle for "the cog saw W" is the cog saying it saw W.
+ *
+ * sithControl_GetKey is a pure read: stdControl_ReadKey adds into *pOut from
+ * aKeyPressed and returns aKeyInfo (stdControl.c:442-464), and neither array is
+ * cleared by reading. Its one side effect is clearing stdControl_bControlsIdle,
+ * which only suppresses the 30-second idle camera. */
+static void jkCogFactory_ProbeInput(void)
+{
+    static const struct { const char* pName; int func; } aFuncs[] = {
+        { "fwd",  INPUT_FUNC_FORWARD  },
+        { "turn", INPUT_FUNC_TURN     },
+        { "side", INPUT_FUNC_SLIDE    },
+        { "jump", INPUT_FUNC_JUMP     },
+        { "duck", INPUT_FUNC_DUCK     },
+        { "fire1", INPUT_FUNC_FIRE1   },
+        { "fire2", INPUT_FUNC_FIRE2   },
+        { "use",  INPUT_FUNC_ACTIVATE },
+    };
+    SithThing* p = sithPlayer_g_pLocalPlayerThing;
+    char aKeys[192];
+    int n = 0;
+    size_t i;
+
+    if (!p)
+    {
+        jkCogFactory_Printf("probe input: no local player yet");
+        return;
+    }
+
+    if (p->moveType == SITH_MT_PHYSICS)
+    {
+        /* thrust IS what GetThingThrust returns, and rotvel IS what
+         * GetThingRotVel returns -- the same two fields, unscaled. */
+        jkCogFactory_Printf("probe input: thrust=(%.4f %.4f %.4f) "
+                            "rotvel=(%.4f %.4f %.4f) crouch=%d attach=0x%x "
+                            "physflags=0x%x maxthrust=%.4f",
+                            (double)p->physicsParams.acceleration.x,
+                            (double)p->physicsParams.acceleration.y,
+                            (double)p->physicsParams.acceleration.z,
+                            (double)p->physicsParams.angularVelocity.x,
+                            (double)p->physicsParams.angularVelocity.y,
+                            (double)p->physicsParams.angularVelocity.z,
+                            (p->physicsParams.flags & SITH_PF_CROUCHING) ? 1 : 0,
+                            p->attach_flags, p->physicsParams.flags,
+                            (double)(p->actorParams.maxThrust
+                                     + p->actorParams.extraSpeed));
+    }
+    else
+    {
+        /* GetThingThrust pushes NOTHING for a non-physics thing
+         * (sithCogFunctionThing.c:1669-1677) -- not zero, nothing -- so a cog
+         * reading it underflows its own stack. Worth seeing in the probe. */
+        jkCogFactory_Printf("probe input: move=%d -- NOT physics, so "
+                            "GetThingThrust pushes nothing at all", p->moveType);
+    }
+
+    jkCogFactory_Printf("probe input: weapon=%d mode=%d",
+                        sithInventory_GetCurrentWeapon(p),
+                        sithWeapon_GetCurWeaponMode());
+
+    /* Held/pressed per input function. `held` is aKeyInfo (down right now),
+     * `hits` is the accumulated press count for this frame. */
+    aKeys[0] = 0;
+    for (i = 0; i < sizeof(aFuncs) / sizeof(aFuncs[0]); i++)
+    {
+        int hits = 0;
+        int held = sithControl_IsOpen()
+                 ? sithControl_GetKey(aFuncs[i].func, &hits) : 0;
+        n += snprintf(aKeys + n, sizeof(aKeys) - (size_t)n, "%s%s=%d/%d",
+                      i ? " " : "", aFuncs[i].pName, held ? 1 : 0, hits);
+        if (n >= (int)sizeof(aKeys) - 1)
+            break;
+    }
+    jkCogFactory_Printf("probe input: keys %s", aKeys);
+}
+
 static void jkCogFactory_ProbeTime(void)
 {
     /* The one probe that answers a question about the HARNESS's own contract:
@@ -1116,6 +1210,11 @@ int jkCogFactory_Probe(const char* pSpec)
         jkCogFactory_ProbePlayer();
         return 1;
     }
+    if (!strncmp(pSpec, "input", 5))
+    {
+        jkCogFactory_ProbeInput();
+        return 1;
+    }
     if (!strncmp(pSpec, "time", 4))
     {
         jkCogFactory_ProbeTime();
@@ -1137,8 +1236,8 @@ int jkCogFactory_Probe(const char* pSpec)
         return 1;
     }
 
-    jkCogFactory_Printf("probe: cannot parse '%s' (want world | player | time | "
-                        "thing <n> | sector <n> | surface <n>)", pSpec);
+    jkCogFactory_Printf("probe: cannot parse '%s' (want world | player | input | "
+                        "time | thing <n> | sector <n> | surface <n>)", pSpec);
     return 0;
 }
 
