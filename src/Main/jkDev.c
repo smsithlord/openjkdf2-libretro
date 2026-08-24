@@ -187,6 +187,20 @@ void jkDev_DrawLog()
     if ( Main_bNoHUD )
         return;
 
+    /* Added: the cogfactory's screenshot switch, in the same place and the
+     * same shape as the engine's own Main_bNoHUD -- returning here skips the
+     * entry update, the draw AND the blit that composites it, which is the
+     * only point in the chain where doing nothing actually leaves nothing on
+     * screen. (Suppressing further down does not work: the loop clears each
+     * line's rect in jkDev_vbuf immediately before redrawing it, so a draw
+     * that never happens leaves the previous frame's text there forever.)
+     *
+     * It suppresses only the DRAWING. jkDev_PrintUniString still re-emits
+     * every line on the [CF] channel, so `expect` and every checker are
+     * untouched and a screenshot run stays as assertable as any other. */
+    if ( !jkCogFactory_DevTextEnabled() )
+        return;
+
     jkDev_UpdateEntries();
     v0 = jkDev_vbuf;
     jkDev_DrawEntries();
@@ -237,6 +251,17 @@ void jkDev_BlitLogToScreen()
 
     // Added: Prevent crashes
     if ( Main_bNoHUD )
+        return;
+
+    /* Added: the cogfactory's screenshot switch -- see jkDev_DrawLog.
+     *
+     * THIS IS THE SECOND HALF AND IT IS THE ONE THAT MATTERS. The log reaches
+     * the screen by TWO independent entry points from jkGame: DrawLog, which
+     * renders the text into jkDev_vbuf, and this, which composites it. Gating
+     * only the first changes nothing visible -- the composite keeps blitting
+     * whatever the vbuf already held, and the picture is byte-identical.
+     * Measured: same md5 before and after. */
+    if ( !jkCogFactory_DevTextEnabled() )
         return;
 
 #ifdef SDL2_RENDER

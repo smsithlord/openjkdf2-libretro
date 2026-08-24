@@ -1165,6 +1165,26 @@ static void jkCogFactory_ProbeSector(SithWorld* pWorld, int idx)
                         (double)pSec->tint.z);
 }
 
+/* Drawing the on-screen message log is the default; a screenshot turns it off.
+ * Note this is NOT gated on jkCogFactory_bEnabled being switched off: with the
+ * factory disabled the log draws as it always did, which is the shipping
+ * game's behaviour. */
+static int jkCogFactory_bDrawDevText = 1;
+
+void jkCogFactory_SetDevText(int bDraw)
+{
+    if (jkCogFactory_bDrawDevText == (bDraw != 0))
+        return;
+    jkCogFactory_bDrawDevText = (bDraw != 0);
+    jkCogFactory_Printf("devtext: on-screen cog text %s ([CF] output is unaffected)",
+                        jkCogFactory_bDrawDevText ? "ON" : "OFF");
+}
+
+int jkCogFactory_DevTextEnabled(void)
+{
+    return jkCogFactory_bDrawDevText;
+}
+
 static void jkCogFactory_ProbeSurface(SithWorld* pWorld, int idx)
 {
     SithSurface* pSurf;

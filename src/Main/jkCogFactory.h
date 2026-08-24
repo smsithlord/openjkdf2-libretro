@@ -152,6 +152,16 @@ int  jkCogFactory_AutopilotAxis(int axisId, flex_t* pOut);
  * possible failure. */
 int jkCogFactory_Probe(const char* pSpec);
 
+/* Draw the engine's on-screen message log, or do not.
+ *
+ * A generated cog's Print()/jkStringOutput() readouts are drawn over the
+ * top-left of the frame AND re-emitted on the [CF] channel. The overlay is the
+ * right default while building; it is wrong in the screenshot that ships with
+ * the GOB. Turning it off suppresses ONLY the drawing -- every line still
+ * reaches [CF], so nothing a test asserts on changes. */
+void jkCogFactory_SetDevText(int bDraw);
+int  jkCogFactory_DevTextEnabled(void);
+
 /* Fixed timestep: make game time advance by an exact amount per frame, so a
  * test is reproducible in DISTANCE and not merely in order.
  *
@@ -209,6 +219,8 @@ double jkCogFactory_FixedStepSecs(void);
 #define jkCogFactory_DumpWorld(x)       do {} while (0)
 #define jkCogFactory_CogLoadFailed(x,y) do {} while (0)
 #define jkCogFactory_FixedStepSecs()    (0.0)
+#define jkCogFactory_SetDevText(x)      do {} while (0)
+#define jkCogFactory_DevTextEnabled()   (1)
 
 #endif /* LIBRETRO_BUILD */
 

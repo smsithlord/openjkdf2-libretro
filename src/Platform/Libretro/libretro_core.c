@@ -156,6 +156,7 @@ typedef struct core_state_t
     char cf_goto_last[128];
     char cf_cam_last[128];
     char cf_timestep_last[128];
+    char cf_devtext_last[16];
     char cf_probe_last[128];
     bool is_mots;
 
@@ -1289,6 +1290,31 @@ static void core_refresh_options(void)
     {
         snprintf(g_core.cf_timestep_last, sizeof(g_core.cf_timestep_last), "%s", var.value);
         jkCogFactory_SetTimestep(var.value);
+    }
+
+    /* ON-SCREEN COG TEXT, off for a screenshot.
+     *
+     * Every Print() and jkStringOutput() a generated cog makes is ALSO drawn
+     * over the top-left of the frame, which is exactly what you want while
+     * building the thing and exactly what you do not want in the screenshot
+     * that ships beside the GOB. The alternative is gating every readout
+     * inside the cog, which is clutter in the one place clutter is most
+     * expensive.
+     *
+     * This rides the same undeclared cf_ channel as warp/cam/probe, so it is
+     * not offered to a player and costs no new ABI, and it suppresses only the
+     * DRAWING -- jkCogFactory_Printf still re-emits every line on the [CF]
+     * channel, so `expect` and every checker are completely unaffected. A
+     * screenshot run stays as assertable as any other. */
+    var.key = "openjkdf2_cf_devtext";
+    var.value = NULL;
+    if (JKCF_ON() && g_core.environ_cb
+        && g_core.environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var)
+        && var.value
+        && strcmp(var.value, g_core.cf_devtext_last) != 0)
+    {
+        snprintf(g_core.cf_devtext_last, sizeof(g_core.cf_devtext_last), "%s", var.value);
+        jkCogFactory_SetDevText(strcmp(var.value, "off") != 0);
     }
 
     /* Direct-boot episode-type filter; the game mode itself always follows
