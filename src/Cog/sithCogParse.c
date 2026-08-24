@@ -10,6 +10,8 @@
 #include "General/stdConffile.h"
 #include "General/stdString.h"
 
+#include "Main/jkCogFactory.h"
+
 #include "jk.h"
 
 // For progress tracking script...
@@ -29,11 +31,81 @@ extern int yyparse();
 // Added: debug
 char* sithCogParse_lastParsedFile = "INVALID";
 
+/* Added: THE PARSE-TREE POOL MUST NOT MOVE.
+ *
+ * `sith_cog_parser_node` carries RAW POINTERS to other nodes -- `parent`,
+ * `child`, the file-scope `cogparser_topnode`, and every node the yacc value
+ * stack is holding part-way through a reduction. The pool used to be one
+ * malloc of 8096 nodes grown with `realloc`, which moves the block: the
+ * 8097th node of a script invalidated every pointer already stored in the
+ * first 8096, and nothing checked, warned or crashed.
+ *
+ * What it produced instead was a script that PARSES, LOADS AND RUNS with a
+ * corrupt tree. p21 hit it at ~8100 nodes and the symptom was two subroutines'
+ * jkString output interleaved into one line and an `activate` that ran the
+ * wrong branch -- i.e. it looked like a bug in the COG, and the COG was fine.
+ * Adding one `Print()` was what crossed the boundary.
+ *
+ * The fix is to allocate in fixed CHUNKS and never move one. Every address
+ * handed out stays valid for the life of the parse, which is the property the
+ * node representation assumed all along.
+ */
+#define COGPARSE_NODES_PER_CHUNK 8096
+
+static sith_cog_parser_node** cogparse_aChunks = NULL;
+static int cogparse_numChunks = 0;
+static int cogparse_warnedChunks = 0;
+
+sith_cog_parser_node* sithCogParse_AllocNode(void)
+{
+    int chunk = cogparser_current_nodeidx / COGPARSE_NODES_PER_CHUNK;
+    int slot = cogparser_current_nodeidx % COGPARSE_NODES_PER_CHUNK;
+
+    if ( chunk >= cogparse_numChunks )
+    {
+        sith_cog_parser_node** grown = (sith_cog_parser_node**)realloc(
+            cogparse_aChunks, sizeof(sith_cog_parser_node*) * (chunk + 1));
+        if ( !grown )
+            return NULL;
+        cogparse_aChunks = grown;
+        while ( cogparse_numChunks <= chunk )
+        {
+            cogparse_aChunks[cogparse_numChunks] = (sith_cog_parser_node*)malloc(
+                COGPARSE_NODES_PER_CHUNK * sizeof(sith_cog_parser_node));
+            if ( !cogparse_aChunks[cogparse_numChunks] )
+                return NULL;
+            cogparse_numChunks++;
+        }
+        /* Visible rather than silent: a script big enough to need a second
+         * chunk is exactly the script the old code got wrong. */
+        if ( chunk > 0 && !cogparse_warnedChunks )
+        {
+            cogparse_warnedChunks = 1;
+            jkCogFactory_Printf("cog parser: '%s' needs %d node chunks "
+                                "(%d nodes); the pool no longer reallocs",
+                                sithCogParse_lastParsedFile,
+                                cogparse_numChunks,
+                                cogparse_numChunks * COGPARSE_NODES_PER_CHUNK);
+        }
+        cogparser_nodes_alloc = cogparse_aChunks[0];
+        cogparser_num_nodes = cogparse_numChunks * COGPARSE_NODES_PER_CHUNK;
+    }
+
+    cogparser_current_nodeidx++;
+    return &cogparse_aChunks[chunk][slot];
+}
+
 void sithCogParse_FreeParseTree()
 {
-    if ( cogparser_nodes_alloc )
+    if ( cogparse_aChunks )
     {
-        SITH_FREE(cogparser_nodes_alloc);
+        int i;
+        for ( i = 0; i < cogparse_numChunks; i++ )
+            SITH_FREE(cogparse_aChunks[i]);
+        SITH_FREE(cogparse_aChunks);
+        cogparse_aChunks = NULL;
+        cogparse_numChunks = 0;
+        cogparser_nodes_alloc = NULL;
         cogparser_num_nodes = 0;
         cogparser_current_nodeidx = 0;
     }
@@ -154,6 +226,33 @@ int sithCogParse_Load(char *pFilename, SithCogScript *pScript, int bParseDescrip
     }
     if ( stdConffile_ReadArgs() && !_strcmp(stdConffile_g_entry.aArgs[0].value, "code") && sithCogParse_ParseSectionCode(pScript) )
     {
+        /* Added: HOW CLOSE THIS SCRIPT CAME TO THE PARSER'S LIMITS.
+         *
+         * `cog_yacc_loop_depth` is a single counter shared by every symbol and
+         * every branch target, and it indexes `cog_parser_node_stackpos`,
+         * which is a FIXED array of SITHCOG_NODE_STACKDEPTH entries with no
+         * bounds check anywhere (`cog_parser_node_stackpos[v6] = ...`,
+         * :264 and :321). Past the end it writes over whatever follows and
+         * a `Call` lands at a garbage address -- a script that loads, runs,
+         * and executes the wrong subroutine.
+         *
+         * Reported rather than merely guarded because "how big can a COG be"
+         * has no answer anywhere else. */
+        if (JKCF_ON())
+        {
+            jkCogFactory_Printf("cog parse: '%s' %d nodes, %d labels/symbols "
+                                "of %d, %d code words",
+                                stdFileFromPath(pFilename),
+                                cogparser_current_nodeidx, cog_yacc_loop_depth,
+                                SITHCOG_NODE_STACKDEPTH, pScript->codeSize);
+        }
+        if (cog_yacc_loop_depth >= SITHCOG_NODE_STACKDEPTH)
+        {
+            stdPrintf(pSithHS->errorPrint, ".\\Cog\\sithCogParse.c", 227,
+                      "COG %s uses %d labels/symbols, over the %d limit -- "
+                      "branch targets are corrupt.\n", pFilename,
+                      cog_yacc_loop_depth, SITHCOG_NODE_STACKDEPTH);
+        }
         for (v6 = 0; v6 < pScript->numHandlers; v6++)
         {
             v8 = pScript->aHandlers[v6].field_8;
@@ -657,19 +756,11 @@ sith_cog_parser_node* sithCogParse_MakeLeafNode(int opcode, int symbolId)
 
 sith_cog_parser_node* sithCogParse_MakeVectorLeafNode(int opcode, cog_flex_t* pVect)
 {
-    if (!cogparser_nodes_alloc)
-    {
-        cogparser_nodes_alloc = (sith_cog_parser_node *)malloc(8096 * sizeof(sith_cog_parser_node));
-        cogparser_num_nodes = 8096;
-    }
-    
-    if ( cogparser_current_nodeidx == cogparser_num_nodes )
-    {
-        cogparser_nodes_alloc = (sith_cog_parser_node*)realloc(cogparser_nodes_alloc, 2 * cogparser_num_nodes * sizeof(sith_cog_parser_node));
-        cogparser_num_nodes *= 2;
-    }
-    
-    sith_cog_parser_node* node = &cogparser_nodes_alloc[cogparser_current_nodeidx++];
+    // Added: chunked, so nodes already handed out never move. See
+    // sithCogParse_AllocNode.
+    sith_cog_parser_node* node = sithCogParse_AllocNode();
+    if ( !node )
+        return NULL;
     _memset(node, 0, sizeof(sith_cog_parser_node));
     node->opcode = opcode;
     node->vector[0] = pVect[0];
@@ -684,19 +775,11 @@ sith_cog_parser_node* sithCogParse_MakeVectorLeafNode(int opcode, cog_flex_t* pV
 
 sith_cog_parser_node* sithCogParse_MakeNode(sith_cog_parser_node* pLeft, sith_cog_parser_node* pRight, int opcode, int value)
 {
-    if (!cogparser_nodes_alloc)
-    {
-        cogparser_nodes_alloc = (sith_cog_parser_node *)malloc(8096 * sizeof(sith_cog_parser_node));
-        cogparser_num_nodes = 8096;
-    }
-    
-    if ( cogparser_current_nodeidx == cogparser_num_nodes )
-    {
-        cogparser_nodes_alloc = (sith_cog_parser_node*)realloc(cogparser_nodes_alloc, 2 * cogparser_num_nodes * sizeof(sith_cog_parser_node));
-        cogparser_num_nodes *= 2;
-    }
-    
-    sith_cog_parser_node* node = &cogparser_nodes_alloc[cogparser_current_nodeidx++];
+    // Added: chunked, so nodes already handed out never move. See
+    // sithCogParse_AllocNode.
+    sith_cog_parser_node* node = sithCogParse_AllocNode();
+    if ( !node )
+        return NULL;
     _memset(node, 0, sizeof(sith_cog_parser_node));
     node->opcode = opcode;
     node->value = value;
