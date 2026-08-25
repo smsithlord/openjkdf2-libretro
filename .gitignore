@@ -147,6 +147,10 @@ tools/*
 !tools/cogarchive/
 !tools/DataMaster/
 !tools/Parsec/
+# SED level-editor integration (Level Design epic): sources + notes are
+# committed; the installed editor and build output live under tools/sed/bin,
+# which tools/sed/.gitignore excludes.
+!tools/sed/
 # ...but NOT the archive it builds. That is 540 retail COGs, 35 retail JKLs and
 # a derived index: extracted game data, regenerated in ~10 s by
 # `python tools/cogarchive/build.py`, and never committed.
