@@ -203,6 +203,15 @@ int jkGuiDisplay_Show()
     jkGuiRend_MenuSetEscapeKeyShortcutElement(&jkGuiDisplay_menu, &jkGuiDisplay_aElements[8]);
     jkGuiSetup_sub_412EF0(&jkGuiDisplay_menu, 0);
 
+#ifdef LIBRETRO_BUILD
+    // Libretro: the frontend owns the window. Fullscreen, HiDPI and vsync are
+    // its settings (RetroArch: Settings > Video); showing them here would offer
+    // switches that do nothing. Same shape as the TARGET_* menu gating.
+    jkGuiDisplay_aElements[13].bIsVisible = 0; // GUIEXT_EN_FULLSCREEN
+    jkGuiDisplay_aElements[14].bIsVisible = 0; // GUIEXT_EN_HIDPI
+    jkGuiDisplay_aElements[20].bIsVisible = 0; // GUIEXT_EN_VSYNC
+#endif
+
     jkGuiDisplay_aElements[10].selectedTextEntry = jkPlayer_fov - FOV_MIN;
     jkGuiDisplay_aElements[12].selectedTextEntry = jkPlayer_fovIsVertical;
     jkGuiDisplay_aElements[13].selectedTextEntry = Window_isFullscreen;
@@ -233,12 +242,16 @@ continue_menu:
     {
         jkPlayer_fov = FOV_MIN + jkGuiDisplay_aElements[10].selectedTextEntry;
         jkPlayer_fovIsVertical = jkGuiDisplay_aElements[12].selectedTextEntry;
+#ifndef LIBRETRO_BUILD
         Window_SetFullscreen(jkGuiDisplay_aElements[13].selectedTextEntry);
         Window_SetHiDpi(jkGuiDisplay_aElements[14].selectedTextEntry);
+#endif
         jkPlayer_enableTextureFilter = jkGuiDisplay_aElements[15].selectedTextEntry;
         jkPlayer_enableOrigAspect = jkGuiDisplay_aElements[16].selectedTextEntry;
         jkPlayer_fpslimit = FPS_LIMIT_MIN + jkGuiDisplay_aElements[18].selectedTextEntry;
+#ifndef LIBRETRO_BUILD
         jkPlayer_enableVsync = jkGuiDisplay_aElements[20].selectedTextEntry;
+#endif
         jkPlayer_enableBloom = jkGuiDisplay_aElements[21].selectedTextEntry;
         jkPlayer_enableSSAO = jkGuiDisplay_aElements[22].selectedTextEntry;
 

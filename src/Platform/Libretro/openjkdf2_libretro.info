@@ -8,10 +8,10 @@
 # snapshots (see DESIGN.md).
 display_name = "Star Wars: Jedi Knight - Dark Forces II (OpenJKDF2)"
 categories = "Game engine"
-authors = "shinyquagsire23|OpenJKDF2 contributors"
+authors = "shinyquagsire23|OpenJKDF2 contributors|openjkdf2_libretro contributors"
 corename = "OpenJKDF2"
 supported_extensions = "gob|goo"
-license = "MIT"
+license = "ISC-style (see LICENSE.md)"
 permissions = ""
 supports_no_game = "false"
 database = ""

@@ -1056,8 +1056,15 @@ void stdControl_ReadMouse()
         //stdControl_UpdateKeyState(KEY_MOUSE_B1 + i, 0 /* buttonval */, stdControl_curReadTime);
     }
 
+#ifdef LIBRETRO_BUILD
+    // Libretro: SDL never owns the window, so SDL_GetMouseState() is always
+    // empty and buttons 3/4/5 were dead. The core polls them from the frontend.
+    extern unsigned libretro_GetMouseButtons(void);
+    uint32_t buttons = libretro_GetMouseButtons();
+#else
     float x,y;
     uint32_t buttons = SDL_GetMouseState(&x, &y);
+#endif
 
     stdControl_UpdateKeyState(KEY_MOUSE_B1, Window_bMouseLeft, stdControl_curReadTime);
     stdControl_UpdateKeyState(KEY_MOUSE_B2, Window_bMouseRight, stdControl_curReadTime);

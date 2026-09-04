@@ -136,6 +136,15 @@ void jkGuiMain_Show()
     jkGuiMain_elements[8].wstr = openjkdf2_waReleaseVersion;
     jkGuiMain_elements[9].wstr = openjkdf2_waReleaseCommitShort;
 
+#if defined(LIBRETRO_BUILD) && defined(QOL_IMPROVEMENTS)
+    // Libretro: "Expansions & Mods" switches games by restarting the process
+    // with a new -path, which a core cannot do. Each game loads through its
+    // own ROM and mods/*.gob override resource/ automatically, so the screen
+    // has no job here. Hide the entry rather than the handler (a stale
+    // profile can still not reach it).
+    jkGuiMain_elements[7].bIsVisible = 0;
+#endif
+
     // Added
     stdBitmap_EnsureData(jkGui_stdBitmaps[JKGUI_BM_BK_MAIN]);
 

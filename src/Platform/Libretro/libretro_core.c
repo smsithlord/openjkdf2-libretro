@@ -615,6 +615,8 @@ static void core_update_mouse_position(int dx, int dy)
     }
 }
 
+static unsigned s_mouse_extra_mask = 0;
+
 static void core_poll_input(void)
 {
     retro_input_state_t input = g_core.input_state_cb;
@@ -668,6 +670,26 @@ static void core_poll_input(void)
         Window_mouseWheelY += 1;
     if (input(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_WHEELDOWN))
         Window_mouseWheelY -= 1;
+
+    /* Buttons 3/4/5. The SDL platform reads these straight from
+     * SDL_GetMouseState(), which never sees the frontend's mouse; stdControl
+     * asks libretro_GetMouseButtons() instead under LIBRETRO_BUILD. Same
+     * SDL_BUTTON_*MASK layout so the consumer stays one line per button. */
+    unsigned mask = 0;
+    if (input(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_MIDDLE))
+        mask |= 1u << 1; /* SDL_BUTTON_MMASK */
+    if (input(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_BUTTON_4))
+        mask |= 1u << 3; /* SDL_BUTTON_X1MASK */
+    if (input(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_BUTTON_5))
+        mask |= 1u << 4; /* SDL_BUTTON_X2MASK */
+    s_mouse_extra_mask = mask;
+}
+
+/* Frontend-sourced state of mouse buttons 3/4/5 as an SDL_BUTTON_*MASK word
+ * (Platform/SDL2/stdControl.c reads it in place of SDL_GetMouseState). */
+unsigned libretro_GetMouseButtons(void)
+{
+    return s_mouse_extra_mask;
 }
 
 /* ------------------------------------------------------------------------
@@ -1637,7 +1659,12 @@ RETRO_API void retro_get_system_info(struct retro_system_info* info)
 {
     memset(info, 0, sizeof(*info));
     info->library_name = "OpenJKDF2";
-    info->library_version = OPENJKDF2_RELEASE_VERSION_STRING;
+    /* "<core> (OpenJKDF2 <engine> <commit>)": the core has its own version
+     * (plat_libretro.cmake); the engine's tells a bug report which upstream
+     * it was built on. */
+    info->library_version = OPENJKDF2_LIBRETRO_VERSION
+                            " (OpenJKDF2 " OPENJKDF2_RELEASE_VERSION_STRING
+                            " " OPENJKDF2_RELEASE_COMMIT_SHORT ")";
     info->valid_extensions = "gob|goo";
     info->need_fullpath = true; /* GOBs are streamed containers; never load to memory */
     info->block_extract = false;

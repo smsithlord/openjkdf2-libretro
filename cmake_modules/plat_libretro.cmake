@@ -41,7 +41,19 @@ macro(plat_initialize)
     set(TARGET_LIBRETRO TRUE)
     add_compile_definitions(LIBRETRO_BUILD)
 
+    # The core's own version, independent of the engine's. library_version
+    # (retro_get_system_info) reports this plus the OpenJKDF2 version and
+    # commit it was built from. Bump here and tag libretro-v<version>.
+    set(OPENJKDF2_LIBRETRO_VERSION "0.1.0")
+    add_compile_definitions(OPENJKDF2_LIBRETRO_VERSION=\"${OPENJKDF2_LIBRETRO_VERSION}\")
+
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /std:c11")
+
+    # CRT: dynamic (/MD), so the core needs the Visual C++ 2015-2022 x64
+    # redistributable on the user's machine (documented in README_LIBRETRO.md).
+    # Static (/MT) was tried and rejected for 0.1: the vendored codec builds
+    # (SDL3_mixer's opus/opusfile/vorbis, plus libpng and SDL3-static) come out
+    # /MD regardless of CMAKE_MSVC_RUNTIME_LIBRARY, and the mix does not link.
 endmacro()
 
 macro(plat_specific_deps)
@@ -110,6 +122,17 @@ macro(plat_link_and_package)
     target_compile_options(sith_engine PRIVATE ${OPENJKDF2_DEBUG_COPTS})
     target_compile_options(${BIN_NAME} PRIVATE ${OPENJKDF2_DEBUG_COPTS})
     target_link_options(${BIN_NAME} PRIVATE $<$<CONFIG:Release,RelWithDebInfo>:/DEBUG>)
+
+    # The core info file belongs in the frontend's info/ directory, keyed by
+    # the DLL basename. Without it RetroArch >= 1.15 disables savestates. Copy
+    # it beside the DLL so a build directory is a complete package.
+    add_custom_command(
+        TARGET ${BIN_NAME}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+            ${PROJECT_SOURCE_DIR}/src/Platform/Libretro/openjkdf2_libretro.info
+            $<TARGET_FILE_DIR:${BIN_NAME}>/openjkdf2_libretro.info
+    )
 
     # The core's runtime DLL deps must sit next to it (RetroArch loads the core
     # from its cores dir; document copying these alongside).
