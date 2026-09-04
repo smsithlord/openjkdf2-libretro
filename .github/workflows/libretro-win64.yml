@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Only the submodules the core needs (README_LIBRETRO.md lists the
           # same seven). GameNetworkingSockets/protobuf/physfs are not used.
@@ -30,11 +30,24 @@ jobs:
           git submodule update --init --depth 1 lib/SDL lib/SDL_mixer lib/openal lib/glew lib/zlib lib/libpng lib/freeglut
           git -C lib/SDL_mixer submodule update --init --depth 1
 
+      # One interpreter for both pip and CMake. The runner's bare `pip` and
+      # the Python3 CMake finds (hosted toolcache) are different installs, so
+      # `pip install cogapp` landed where the globals.h generator never looked.
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Python deps
-        run: pip install cogapp
+        shell: pwsh
+        run: |
+          python -m pip install cogapp
+          python -m cogapp --version
+          "PYTHON_EXE=$((Get-Command python).Source)" >> $env:GITHUB_ENV
 
       - name: Configure
-        run: cmake -S . -B build_libretro -A x64 -DPLAT_LIBRETRO=TRUE
+        shell: pwsh
+        run: cmake -S . -B build_libretro -A x64 -DPLAT_LIBRETRO=TRUE "-DPython3_EXECUTABLE=$env:PYTHON_EXE"
 
       - name: Build
         run: cmake --build build_libretro --config Release --target openjkdf2_libretro --parallel
