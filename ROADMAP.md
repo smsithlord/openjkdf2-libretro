@@ -449,8 +449,10 @@ pacing. Now (see DESIGN.md "Audio" for the implemented shape):
 - [x] CI: `.github/workflows/libretro-win64.yml` builds on push/PR, packages
       the zip (+ a symbols zip), prints `dumpbin /dependents`, and attaches
       both to a pre-release on a `libretro-v*` tag. Upstream's three
-      workflows switched to `workflow_dispatch`. Not yet run on GitHub (no
-      remote yet).
+      workflows switched to `workflow_dispatch`. Green on GitHub since
+      2026-09-04 (smsithlord/openjkdf2-libretro, ~6 min); the artifact zip was
+      pulled back and passed the harness smoke test and the OpenAL
+      resolution check.
 - [x] License review: `THIRD_PARTY_NOTICES.md` lists what is linked into the
       DLL and what ships beside it.
 - [x] User docs: README_LIBRETRO.md rewritten as the user-facing README
