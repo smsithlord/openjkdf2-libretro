@@ -1,0 +1,87 @@
+name: libretro core (Windows x64)
+
+# The only workflow that builds THIS fork's deliverable. Upstream's three
+# workflows (MinGW, Ubuntu, macOS) are kept for merge friendliness but run on
+# workflow_dispatch only: they build the standalone game, not the core.
+
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'libretro-v*' ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Only the submodules the core needs (README_LIBRETRO.md lists the
+          # same seven). GameNetworkingSockets/protobuf/physfs are not used.
+          submodules: false
+
+      - name: Submodules
+        shell: bash
+        run: |
+          git submodule update --init --depth 1 lib/SDL lib/SDL_mixer lib/openal lib/glew lib/zlib lib/libpng lib/freeglut
+          git -C lib/SDL_mixer submodule update --init --depth 1
+
+      - name: Python deps
+        run: pip install cogapp
+
+      - name: Configure
+        run: cmake -S . -B build_libretro -A x64 -DPLAT_LIBRETRO=TRUE
+
+      - name: Build
+        run: cmake --build build_libretro --config Release --target openjkdf2_libretro --parallel
+
+      - name: Package
+        shell: bash
+        run: |
+          set -e
+          V=$(sed -n 's/.*set(OPENJKDF2_LIBRETRO_VERSION "\([^"]*\)").*/\1/p' cmake_modules/plat_libretro.cmake)
+          PKG=openjkdf2_libretro-${V}-win64
+          mkdir -p dist/$PKG dist/${PKG}-symbols
+          cp build_libretro/Release/openjkdf2_libretro.dll  dist/$PKG/
+          cp build_libretro/Release/openjkdf2_libretro.info dist/$PKG/
+          cp build_libretro/OpenAL32.dll                    dist/$PKG/
+          cp README_LIBRETRO.md                             dist/$PKG/README.md
+          cp LICENSE.md                                     dist/$PKG/LICENSE.md
+          cp THIRD_PARTY_NOTICES.md                         dist/$PKG/THIRD_PARTY_NOTICES.md
+          cp build_libretro/Release/openjkdf2_libretro.pdb  dist/${PKG}-symbols/
+          cd dist
+          7z a -tzip ${PKG}.zip $PKG
+          7z a -tzip ${PKG}-symbols.zip ${PKG}-symbols
+          echo "PKG=$PKG" >> $GITHUB_ENV
+
+      - name: Runtime dependencies (must not need the VC++ redistributable)
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          & $dumpbin.FullName /dependents build_libretro\Release\openjkdf2_libretro.dll
+
+      - name: Upload core
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG }}
+          path: dist/${{ env.PKG }}.zip
+
+      - name: Upload symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG }}-symbols
+          path: dist/${{ env.PKG }}-symbols.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/libretro-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          files: |
+            dist/${{ env.PKG }}.zip
+            dist/${{ env.PKG }}-symbols.zip

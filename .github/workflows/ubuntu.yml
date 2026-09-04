@@ -1,12 +1,9 @@
 name: Ubuntu 22.04 SDL2
 
+# openjkdf2_libretro: this workflow builds upstream's standalone game, not the
+# libretro core, so it runs on demand only. See libretro-win64.yml.
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches: 
-      - master
+  workflow_dispatch:
 
 jobs:
   build:

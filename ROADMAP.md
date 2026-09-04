@@ -286,20 +286,18 @@ scene description compiled down to JKL — the three `gen.py` files now share
 The pattern: `#ifdef LIBRETRO_BUILD` removing elements from the menus' element
 arrays (or `bIsVisible = 0`), same as existing `TARGET_*` menu gating.
 
-- [ ] **Display options** (`jkGUIDisplay.c`): hide fullscreen, resolution list
-      (enumerated via SDL video — empty/no-op), HiDPI, vsync. See the disposition
-      table below for where each removed option goes; keep gamma/brightness-style
-      options that pure-GL paths honor.
-- [ ] **Mods menu** (`jkGUIMods.c`, entry in `jkGUIMain.c`): relies on `-path` +
-      full process restart (`openjkdf2_restartMode`) — hide the entry; `mods/*.gob`
-      auto-override is the supported path.
-- [ ] **DF2 ↔ MoTS switching** entries: also restart-based — hide (each game loads
-      via its own ROM instead).
+- [x] **Display options** (`Platform/SDL2/jkGUIDisplay.c`): fullscreen, HiDPI
+      and vsync hidden under `LIBRETRO_BUILD` and their writes skipped
+      (2026-09-04, verified by screenshot through the harness). This build has
+      no resolution list to hide; the internal resolution is the core option.
+- [x] **Mods menu** entry hidden in `jkGuiMain_Show` (2026-09-04). The DF2 ↔
+      MoTS switch lived on that screen, so it goes with it; each game loads
+      through its own ROM.
 - [ ] Audit remaining `jkGuiMain`/setup screens for anything touching windowing,
       update checker, or process restart; hide or stub each.
-- [ ] Multiplayer menus: networking is already `Platform/Networking/None`; either
-      hide the menu entries or build with `TARGET_NO_MULTIPLAYER_MENUS TRUE`
-      (needs a link check — MSVC standalone never builds that combination).
+- [x] Multiplayer menus: **kept** (decision 2026-09-04). Local-host
+      multiplayer works through `Platform/Networking/None` and the content
+      tooling depends on it; hiding the menus would remove a working feature.
 
 ### Input completion
 - [ ] **RetroPad mapping**: drive `stdControl`'s joystick axes/buttons
@@ -311,17 +309,23 @@ arrays (or `bIsVisible = 0`), same as existing `TARGET_*` menu gating.
       Mouse" / "RetroPad"): pad injection active on RetroPad (the frontend
       default), disabled when the user picks Keyboard + Mouse; keyboard/mouse
       injection stays on in both modes.
-- [ ] Mouse buttons 3/4/5 (currently dead — engine reads them from
-      `SDL_GetMouseState`): wire `RETRO_DEVICE_MOUSE` middle/4/5 into the same
-      `stdControl` keys.
+- [x] Mouse buttons 3/4/5 (2026-09-04): the core keeps an SDL-mask word from
+      `RETRO_DEVICE_MOUSE` middle/4/5 and `stdControl` reads it in place of
+      `SDL_GetMouseState` under `LIBRETRO_BUILD`. Verified: middle button reads
+      as `fire2` in `probe input`.
 - [ ] Mouse wheel: verify weapon-cycling / menu scrolling both directions.
 - [ ] Text edge cases: Quake console (`~`), cheat entry, save-name entry.
 
 ### Correctness
-- [ ] **Native save round-trip**: save in-game → quit → reload content → load save.
-      Also checkpoint/`persist/` behavior across content reloads.
+- [x] **Native save round-trip** (2026-09-04): walked, saved through the
+      in-game Save screen, unloaded, reloaded content, loaded through the Load
+      screen; the restored position equals the pre-save position to four
+      decimals and differs from a fresh boot. Checkpoint/`persist/` across
+      reloads not separately exercised.
 - [ ] **Intro-crawl corner artifact**: ghost of the previous frame appears top-left
-      during the crawl. The engine assumes the window framebuffer's contents persist
+      during the crawl. Not reproducible in the harness (2026-09-04: five clean
+      captures across the crawl), so it needs a RetroArch session to chase;
+      release-noted for 0.1.0. The engine assumes the window framebuffer's contents persist
       frame-to-frame (partial menu redraws); RetroArch's HW-render FBO may be
       double-buffered. Likely fix: force full redraw under `LIBRETRO_BUILD`, or blit
       the previous frame's FBO first when only dirty-rects were drawn.
@@ -427,19 +431,26 @@ pacing. Now (see DESIGN.md "Audio" for the implemented shape):
 
 ## Release engineering
 
-- [ ] **Core info file** (`openjkdf2_libretro.info`): display name, `gob|goo`
-      extensions, `needs_fullpath`, database/system lines, the "video driver must
-      be gl/glcore" and Game Focus notes. Required for good frontend UX.
-- [ ] `library_version` from the OpenJKDF2 version + core revision (currently
-      inherits `OPENJKDF2_RELEASE_VERSION_STRING`).
-- [ ] **OpenAL32.dll**: static-link OpenAL Soft into the core if licensing/build
-      allows, else ship the DLL next to the core and document it.
-- [ ] CI (GitHub Actions): Windows x64 build on push; Linux once M3 lands;
-      artifact = zip of core (+ info file, README).
-- [ ] License review for distribution (upstream's LICENSE + OpenAL/SDL/GLEW
-      notices in the release zip).
-- [ ] User docs pass: install guide with screenshots, troubleshooting
-      (wrong video driver, Game Focus, data layout), mods how-to.
+- [x] **Core info file**: existed; now copied beside the DLL by the build
+      (POST_BUILD), license field says ISC-style as LICENSE.md does, fork
+      credited in `authors` (2026-09-04).
+- [x] `library_version` = `OPENJKDF2_LIBRETRO_VERSION` ("0.1.0",
+      `plat_libretro.cmake`) + " (OpenJKDF2 v0.9.9 <sha7>)". Tags are
+      `libretro-v*` because upstream's own `v0.x` tags arrive with a fetch.
+- [x] **OpenAL32.dll**: stays a separate DLL (LGPL); documented in the
+      README and THIRD_PARTY_NOTICES.md.
+- [x] CI: `.github/workflows/libretro-win64.yml` builds on push/PR, packages
+      the zip (+ a symbols zip), prints `dumpbin /dependents`, and attaches
+      both to a pre-release on a `libretro-v*` tag. Upstream's three
+      workflows switched to `workflow_dispatch`. Not yet run on GitHub (no
+      remote yet).
+- [x] License review: `THIRD_PARTY_NOTICES.md` lists what is linked into the
+      DLL and what ships beside it.
+- [x] User docs: README_LIBRETRO.md rewritten as the user-facing README
+      (install, data layout, RetroArch settings, options, saves, known issues).
+      No screenshots yet.
+- [ ] Static CRT: tried and rejected for 0.1 (the vendored codec builds are
+      /MD); the README names the VC++ 2015-2022 x64 redistributable.
 - [ ] Upstream hygiene: PR the generic MSVC fixes upstream (`strtok_r`,
       case-range — their MSVC build is broken on master); periodically
       `git merge upstream/master`.
@@ -481,12 +492,12 @@ pacing. Now (see DESIGN.md "Audio" for the implemented shape):
 
 | Issue | Milestone |
 |---|---|
-| Ghost-frame artifact, top-left corner, during opening crawl | M1 |
+| Ghost-frame artifact, top-left corner, during opening crawl (RetroArch only; harness captures are clean) | release note |
 | ~~Music silent; SFX bypasses frontend audio (no FF pitch, plays while paused)~~ — fixed at M2 (loopback consolidation); JK1 music is COG-ducked outside combat by design | done |
-| Middle/extra mouse buttons dead | M1 |
+| ~~Middle/extra mouse buttons dead~~ — fixed 2026-09-04 | done |
 | ~~`retro_reset` is a no-op; unload leaks the parked fiber's engine state and may leave OpenAL threads pinning the DLL~~ — fixed in the lifecycle sprint (`086c8dc8`) | done |
 | OpenAL32.dll stays mapped in the frontend after core unload (no threads, inert; next load reuses it cleanly) | cosmetic — release note only |
-| Display options menu shows non-functional entries | M1 |
-| Mods menu entry present but restart-based (non-functional) | M1 |
+| ~~Display options menu shows non-functional entries~~ — hidden 2026-09-04 | done |
+| ~~Mods menu entry present but restart-based (non-functional)~~ — hidden 2026-09-04 | done |
 | RetroArch "Game Focus" can be toggled off by Scroll Lock, muting hotkey-bound keys | docs |
 | RetroArch's own menu may not regain the mouse over a running game (frontend grab state; Alt+F4 still exits cleanly) | docs |

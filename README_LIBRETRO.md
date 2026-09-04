@@ -1,13 +1,104 @@
 # OpenJKDF2 libretro core
 
-Jedi Knight: Dark Forces II (and eventually MoTS) as a libretro core, built on
-[OpenJKDF2](https://github.com/shinyquagsire23/OpenJKDF2). Status: **M0 bring-up**
-(see [DESIGN.md](DESIGN.md) for the design and milestones).
+Star Wars: Jedi Knight - Dark Forces II, and Mysteries of the Sith, as a
+libretro core for RetroArch and other libretro frontends. Built on
+[OpenJKDF2](https://github.com/shinyquagsire23/OpenJKDF2), the open-source
+reimplementation of the engine. **Windows x64, keyboard + mouse.**
 
-## Build (Windows, MSVC x64)
+You need your own copy of the game. The core contains no game data.
 
-Requirements: Visual Studio 2022 (C++ workload), CMake 3.20+, Python 3 with
-`cogapp` (`pip install cogapp`), git submodules initialized:
+## Install
+
+1. Unzip the release. Put `openjkdf2_libretro.dll` and `OpenAL32.dll` in
+   RetroArch's `cores/` folder and `openjkdf2_libretro.info` in its `info/`
+   folder. (`OpenAL32.dll` must sit next to the core or be on `PATH`.)
+2. The core needs the Microsoft Visual C++ 2015-2022 x64 redistributable. Most
+   machines have it; if the core refuses to load with no message, install it
+   from Microsoft.
+3. In RetroArch, **Settings > Drivers > Video** must be `gl` or `glcore`. The
+   core asks for an OpenGL 3.3 core context; the d3d and vulkan drivers refuse
+   it.
+4. Make a **writable** game folder with the game's data in it:
+
+```
+<game folder>/
+  episode/JK1.GOB        <- load this file as the content
+  resource/Res2.gob      (+ Res1hi.gob or Res1low.gob, VIDEO/, cog/)
+  MUSIC/Track12.ogg ...  (the GOG/Steam soundtrack; disc layouts MUSIC/1, MUSIC/2 also work)
+  player/                (created by the game: profiles, settings, saves)
+  mods/                  (optional: .gob files here override resource/)
+```
+
+Copy `Episode/`, `Resource/` and `MUSIC/` from a legal install (GOG or Steam).
+The Steam install folder itself is read-only for this purpose; copy it
+somewhere the game can write. For Mysteries of the Sith, do the same with its
+files and load `episode/JKM.GOO`.
+
+The loaded file's location **is** the configuration: the folder above it must
+contain `resource/`. If it does not, the core refuses to load and shows what it
+expected on screen (with a fuller diagram in the frontend log).
+
+5. Load the core, then load `episode/JK1.GOB` as content.
+
+## Playing
+
+- **Game Focus** (Scroll Lock in RetroArch) must be on, so keys such as ESC
+  reach the game instead of RetroArch's hotkeys. Turn it on once the game is
+  up; if ESC or the console stop working, it was toggled off.
+- Keyboard and mouse only for now. Mouse buttons 1-5 and the wheel work
+  (button 3 is secondary fire by default; rebind in the game's Setup >
+  Controls). A RetroPad mapping is planned for a later release; the frontend's
+  controller menu already offers "Keyboard + Mouse" as the port 1 device.
+- The game's own Setup menus still hold the options that make sense inside a
+  frontend (FOV, texture filtering, bloom, SSAO, gamma, HUD scale, sound,
+  controls). Fullscreen, vsync, HiDPI and the Expansions & Mods screen are
+  hidden because the frontend owns those; use RetroArch's video settings and
+  the `mods/` folder instead.
+
+## Core options
+
+| Option | What it does |
+|---|---|
+| Boot mode | `episode` (default) starts the loaded episode directly, skipping intro and menu; `intro` and `menu` give the stock click-through; `level` boots straight into the first level; `resume` continues from the auto-resume position |
+| Direct boot episode types | Limit direct boot to single- or multiplayer episodes |
+| Internal resolution | 4:3, 16:9 and 16:10 sizes up to 1920x1440, applied live; the engine renders widescreen natively |
+| Load mods folder | On by default: `mods/*.gob` override `resource/`. Off plays unmodded without moving files (takes effect on the next content load) |
+| Multiplayer saves | Allow saves and states in multiplayer sessions |
+| Netplay | Enable the frontend's netplay handling |
+| Fast-forward speed limit / Slow-motion speed | Bounds for the frontend's speed controls; game time follows |
+| Portable mode (no writes) | The engine creates and modifies nothing; for read-only media or several copies sharing one folder |
+| COG Factory debug signals | For content development only. Leave disabled. |
+
+## Saves and savestates
+
+- **Saves are the game's own.** The in-game Save Game / Load Game screens
+  write `.jks` files into `<game folder>/player/<profile>/`, exactly as the
+  standalone game does. Nothing goes through the frontend's `.srm` mechanism,
+  and RetroArch's save-directory setting is not used.
+- **Savestates are engine savegames in disguise.** Saving a state works
+  wherever the native Save Game menu would; loading one restores through the
+  engine's own load flow over the following frames, so it is not
+  frame-exact. Rewind, run-ahead and netplay-style state use are not
+  supported and the core says so to the frontend. States record which game
+  (JK1 or MoTS) and which mods were loaded, and refuse to load across games.
+- **Auto-resume**: single-player sessions save their position on exit;
+  `Boot mode = resume` continues from it.
+
+## Known issues (0.1.0)
+
+- During the opening crawl, a ghost of the previous frame can appear in the
+  top-left corner under RetroArch. Cosmetic; not reproducible outside
+  RetroArch so far.
+- `OpenAL32.dll` stays mapped in the frontend after the core is unloaded. Inert;
+  the next load reuses it.
+- RetroArch's own menu may not regain the mouse over a running game. Alt+F4
+  still exits cleanly.
+- Scroll Lock toggles Game Focus off as easily as on; see Playing above.
+
+## Building (developers)
+
+Visual Studio 2022 (C++ workload), CMake 3.20+, Python 3 with `cogapp`
+(`pip install cogapp`), submodules:
 
 ```
 git submodule update --init lib/SDL lib/SDL_mixer lib/openal lib/glew lib/zlib lib/libpng lib/freeglut
@@ -16,70 +107,21 @@ cmake -S . -B build_libretro -DPLAT_LIBRETRO=TRUE
 cmake --build build_libretro --config Release --target openjkdf2_libretro --parallel
 ```
 
-Output: `build_libretro/Release/openjkdf2_libretro.dll` (plus `OpenAL32.dll`,
-which must be placed next to the core or on PATH).
+Output: `build_libretro/Release/openjkdf2_libretro.dll` with
+`openjkdf2_libretro.info` and a `.pdb` beside it, and `OpenAL32.dll` one level
+up in `build_libretro/`. The GitHub Actions workflow
+`libretro-win64.yml` builds the same and packages the release zip; tags named
+`libretro-v*` publish it.
 
-## Game data ("ROM") layout
+Design notes are in [DESIGN.md](DESIGN.md), the milestone log in
+[ROADMAP.md](ROADMAP.md), and per-topic notes in [devdocs/](devdocs/). The
+headless test frontend and content tooling used to develop the core are a
+separate repository (see `devdocs/README.md`), not part of this one.
 
-The core loads an **episode GOB** as its ROM and derives the game folder
-("basefolder") from its path:
+## Licensing
 
-```
-<basefolder>/
-  episode/JK1.GOB        <- load this file in RetroArch
-  resource/Res2.gob      (+ Res1hi.gob, VIDEO/, cog/)
-  MUSIC/Track12.ogg ...
-  player/                (created by the game: profiles + saves)
-  mods/                  (optional mod GOBs, override resource/)
-```
-
-Copy `Episode/`, `Resource/`, and `MUSIC/` from a legal Jedi Knight install
-(e.g. the Steam version) into a **writable** folder. The engine writes saves,
-settings, and checkpoints into this folder.
-
-There is no separate asset-folder setting: the loaded GOB's location *is* the
-configuration. If the folder above the GOB doesn't contain `resource/`, the
-core refuses to load and shows an on-screen message explaining the expected
-layout (plus a detailed diagram in the frontend log).
-
-## Running
-
-The standard test environment is a portable RetroArch at `tools/RetroArch-Win64/`
-(gitignored; RetroArch 1.21.0), preconfigured with the `gl` driver, auto Game
-Focus, and the UDP command interface (`SCREENSHOT` on port 55355 is how automated
-tests capture frames):
-
-```
-tools\RetroArch-Win64\retroarch.exe -L build_libretro\Release\openjkdf2_libretro.dll "testdata\jk1\episode\JK1.GOB" --verbose
-```
-
-- RetroArch's **video driver must be `gl` or `glcore`** (Settings → Drivers).
-  The core requests an OpenGL 3.3 core context; d3d/vulkan drivers refuse it.
-- The game is keyboard+mouse heavy: **Game Focus** (Scroll Lock, or the
-  preconfigured auto mode) is required so keys like ESC (skip cutscene, menu
-  back) reach the game instead of RetroArch's hotkeys.
-- MoTS: load a `.goo` episode file (untested until M3).
-
-## Testing
-
-There is also a minimal libretro frontend of our own at
-[tools/harness/](tools/harness/) — headless by default, scriptable, drivable
-live over a TCP port, with screenshots, savestates, scripted input and input
-record/replay. It is the fast loop for development; RetroArch stays the ground
-truth for frontend-compatibility questions. See
-[tools/harness/README.md](tools/harness/README.md).
-
-```
-cmake -S tools/harness -B build_harness -A x64
-cmake --build build_harness --config Release
-build_harness\Release\openjkdf2_harness.exe --rom testdata\jk1\episode\JK1.GOB ^
-    --script tools\harness\tests\smoke_jk1.cmds
-```
-
-## Current limitations (M0)
-
-- Audio plays through the engine's own OpenAL device, not RetroArch's audio
-  pipeline (no fast-forward pitch; audio consolidation lands at M2). Music and
-  cutscene audio are silent (their SDL audio path is inactive).
-- No RetroPad mapping yet (M1); keyboard + mouse only.
-- No save states (by design — the game's native save system is used).
+OpenJKDF2's terms are in [LICENSE.md](LICENSE.md); the libraries the core is
+built from are listed with their licenses in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Jedi Knight is a trademark
+of Lucasfilm Ltd.; this project is not affiliated with Lucasfilm, LucasArts or
+Disney.
