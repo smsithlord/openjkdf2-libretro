@@ -1,3 +1,11 @@
+> **This is openjkdf2_libretro** — a fork of
+> [OpenJKDF2](https://github.com/shinyquagsire23/OpenJKDF2) that packages the
+> engine as a libretro core for RetroArch and other libretro frontends
+> (`-DPLAT_LIBRETRO=TRUE`). Fork docs: **[README_LIBRETRO.md](README_LIBRETRO.md)**
+> (build & usage) · **[DESIGN.md](DESIGN.md)** (port architecture) ·
+> **[ROADMAP.md](ROADMAP.md)** (state & plan). Everything below is upstream's
+> README, kept intact for merges.
+
 # OpenJKDF2
 
 ![MacOS Screenshot](docs/images/screenshot.png)

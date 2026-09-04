@@ -131,30 +131,14 @@ packaging/dreamcast/disc/*
 build_libretro/
 packaging/win32/openjkdf2_libretro.exe.manifest
 testdata/
-# tools/ holds the gitignored portable RetroArch; the test harness under it is
-# source we maintain. Ignore the CONTENTS rather than the directory itself --
-# git never descends into an excluded directory, so a "!tools/harness/" rule
-# under a plain "tools/" would never take effect.
-tools/*
-!tools/harness/
-# The merged JK authoring spec (tools/jkspec) plus the two upstream references
-# it is built from. DataMaster and Parsec are vendored UNMODIFIED and pinned so
-# the extraction stays reproducible; see tools/jkspec/NOTICE.md for attribution
-# and the licensing caveat. The other tool folders (ZED, ConMan, Mat16,
-# RetroArch) stay ignored -- they are attended GUI binaries, not inputs.
-!tools/jkspec/
-!tools/cogfactory/
-!tools/cogarchive/
-!tools/DataMaster/
-!tools/Parsec/
-# SED level-editor integration (Level Design epic): sources + notes are
-# committed; the installed editor and build output live under tools/sed/bin,
-# which tools/sed/.gitignore excludes.
-!tools/sed/
-# ...but NOT the archive it builds. That is 540 retail COGs, 35 retail JKLs and
-# a derived index: extracted game data, regenerated in ~10 s by
-# `python tools/cogarchive/build.py`, and never committed.
-tools/cogarchive/archive/
+# Local tooling lives OUTSIDE this repo. The content-generation workbench
+# (cogfactory, the SED bridge, the test harness, jkspec, cogarchive) is a
+# separate repository that is checked out at tools/ -- so are the attended GUI
+# binaries (portable RetroArch, ZED, ConMan) and the per-machine Claude Code
+# project files. None of it is part of the core.
+tools/
+.claude/
+.mcp.json
 build_harness/
 harness_out/
 __pycache__/
