@@ -2,8 +2,9 @@
 
 OpenJKDF2 (Jedi Knight: Dark Forces II + Mysteries of the Sith) compiled as a libretro
 core. This document is the working design for the port. Product decisions (ROM model,
-basefolder, mods gating, v1 scope) live in [devdocs/00-project-brief.md](devdocs/00-project-brief.md);
-this file covers *how* the port is built. All engine line references are against the
+basefolder, mods gating, v1 scope) were settled in the port's design notes
+(`devdocs/NN`, kept in the developers' workbench repository, not here — see
+README_LIBRETRO.md); this file covers *how* the port is built. All engine line references are against the
 vendored upstream tree in this repo (upstream master `0dbd1ea8`, verified 2026-08-18).
 
 ## Repo structure
@@ -235,7 +236,7 @@ not a designed behavior, and the same side effect is what made the core
 stutter on any frontend whose `retro_run` cadence drifted off 60 Hz.
 
 Fast-forward *does* speed the game up, but that took a separate change — see
-the **virtual clock** ([devdocs/11](devdocs/11-virtual-clock.md)). Stock, the
+the **virtual clock** (devdocs/11). Stock, the
 engine's frame delta comes from real elapsed wall-clock ms
 ([sithTime.c:24](src/Gameplay/sithTime.c#L24) → `stdPlatform_GetTimeMsec`), so
 the deltas over any real second sum to one real second no matter how many

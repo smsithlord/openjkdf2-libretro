@@ -2,7 +2,9 @@
 
 Loose working plan from today's state to a releasable core. Companion to
 [DESIGN.md](DESIGN.md) (architecture) and [README_LIBRETRO.md](README_LIBRETRO.md)
-(build/usage). Checked boxes = done and verified in RetroArch.
+(build/usage). Checked boxes = done and verified in RetroArch. `devdocs/NN`
+refers to the numbered working notes in the developers' workbench repository
+(see README_LIBRETRO.md), not to files in this tree.
 
 ## Where we are
 

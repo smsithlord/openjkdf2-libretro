@@ -113,10 +113,12 @@ up in `build_libretro/`. The GitHub Actions workflow
 `libretro-win64.yml` builds the same and packages the release zip; tags named
 `libretro-v*` publish it.
 
-Design notes are in [DESIGN.md](DESIGN.md), the milestone log in
-[ROADMAP.md](ROADMAP.md), and per-topic notes in [devdocs/](devdocs/). The
-headless test frontend and content tooling used to develop the core are a
-separate repository (see `devdocs/README.md`), not part of this one.
+Design notes are in [DESIGN.md](DESIGN.md) and the milestone log in
+[ROADMAP.md](ROADMAP.md). Source comments and the roadmap cite `devdocs/NN`:
+those are the port's numbered working notes, which live with the headless
+test frontend and content tooling in a separate developers' workbench
+repository, checked out at `tools/` (gitignored) when present. None of it is
+needed to build or run the core.
 
 ## Licensing
 
