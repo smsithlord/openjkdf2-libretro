@@ -439,7 +439,12 @@ pacing. Now (see DESIGN.md "Audio" for the implemented shape):
 - [x] `library_version` = `OPENJKDF2_LIBRETRO_VERSION` ("0.1.0",
       `plat_libretro.cmake`) + " (OpenJKDF2 v0.9.9 <sha7>)". Tags are
       `libretro-v*` because upstream's own `v0.x` tags arrive with a fetch.
-- [x] **OpenAL32.dll**: stays a separate DLL (LGPL); documented in the
+- [x] **OpenAL32.dll**: delay-loaded and preloaded by full path from beside
+      the core (2026-09-04). Frontends load cores with a plain LoadLibrary,
+      whose import search never includes the core's own directory; an eager
+      import bound the legacy System32 router (no ALC_SOFT_loopback) on
+      machines that have one and failed the load on machines that have none.
+      Stays a separate DLL (LGPL); documented in the
       README and THIRD_PARTY_NOTICES.md.
 - [x] CI: `.github/workflows/libretro-win64.yml` builds on push/PR, packages
       the zip (+ a symbols zip), prints `dumpbin /dependents`, and attaches

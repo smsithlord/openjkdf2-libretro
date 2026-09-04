@@ -36,7 +36,7 @@ source of the core, including libsmacker unmodified, is this repository.
 
 | Component | License | Note |
 |---|---|---|
-| OpenAL Soft (`OpenAL32.dll`) | LGPL-2.1 (portions BSD-3-Clause) | `lib/openal/COPYING`, `lib/openal/BSD-3Clause`. Deliberately a separate DLL, not statically linked, so it can be replaced. |
+| OpenAL Soft (`OpenAL32.dll`) | LGPL-2.1 (portions BSD-3-Clause) | `lib/openal/COPYING`, `lib/openal/BSD-3Clause`. Deliberately a separate DLL, not statically linked, so it can be replaced; the core delay-loads it and picks the copy beside itself. |
 
 ## Not part of the core
 

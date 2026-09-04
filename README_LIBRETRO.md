@@ -11,7 +11,9 @@ You need your own copy of the game. The core contains no game data.
 
 1. Unzip the release. Put `openjkdf2_libretro.dll` and `OpenAL32.dll` in
    RetroArch's `cores/` folder and `openjkdf2_libretro.info` in its `info/`
-   folder. (`OpenAL32.dll` must sit next to the core or be on `PATH`.)
+   folder. The core loads the `OpenAL32.dll` beside it by full path, so a
+   different OpenAL elsewhere on the machine (an old one in System32, say) is
+   ignored. Keep the two DLLs together.
 2. The core needs the Microsoft Visual C++ 2015-2022 x64 redistributable. Most
    machines have it; if the core refuses to load with no message, install it
    from Microsoft.
@@ -91,6 +93,9 @@ expected on screen (with a fuller diagram in the frontend log).
   RetroArch so far.
 - `OpenAL32.dll` stays mapped in the frontend after the core is unloaded. Inert;
   the next load reuses it.
+- If `OpenAL32.dll` is missing from `cores/`, the core still loads but audio
+  comes from whatever OpenAL the system has, outside the frontend's control,
+  or not at all. The frontend log says so.
 - RetroArch's own menu may not regain the mouse over a running game. Alt+F4
   still exits cleanly.
 - Scroll Lock toggles Game Focus off as easily as on; see Playing above.
@@ -108,8 +113,8 @@ cmake --build build_libretro --config Release --target openjkdf2_libretro --para
 ```
 
 Output: `build_libretro/Release/openjkdf2_libretro.dll` with
-`openjkdf2_libretro.info` and a `.pdb` beside it, and `OpenAL32.dll` one level
-up in `build_libretro/`. The GitHub Actions workflow
+`openjkdf2_libretro.info`, `OpenAL32.dll` and a `.pdb` beside it, which is
+the complete package. The GitHub Actions workflow
 `libretro-win64.yml` builds the same and packages the release zip; tags named
 `libretro-v*` publish it.
 

@@ -45,25 +45,32 @@ jobs:
           set -e
           V=$(sed -n 's/.*set(OPENJKDF2_LIBRETRO_VERSION "\([^"]*\)").*/\1/p' cmake_modules/plat_libretro.cmake)
           PKG=openjkdf2_libretro-${V}-win64
+          # Flat zips, like other independently released cores: the files sit
+          # at the archive root, ready to drop into cores/ and info/.
           mkdir -p dist/$PKG dist/${PKG}-symbols
           cp build_libretro/Release/openjkdf2_libretro.dll  dist/$PKG/
           cp build_libretro/Release/openjkdf2_libretro.info dist/$PKG/
-          cp build_libretro/OpenAL32.dll                    dist/$PKG/
+          cp build_libretro/Release/OpenAL32.dll            dist/$PKG/
           cp README_LIBRETRO.md                             dist/$PKG/README.md
           cp LICENSE.md                                     dist/$PKG/LICENSE.md
           cp THIRD_PARTY_NOTICES.md                         dist/$PKG/THIRD_PARTY_NOTICES.md
           cp build_libretro/Release/openjkdf2_libretro.pdb  dist/${PKG}-symbols/
-          cd dist
-          7z a -tzip ${PKG}.zip $PKG
-          7z a -tzip ${PKG}-symbols.zip ${PKG}-symbols
+          (cd dist/$PKG            && 7z a -tzip ../${PKG}.zip .)
+          (cd dist/${PKG}-symbols  && 7z a -tzip ../${PKG}-symbols.zip .)
           echo "PKG=$PKG" >> $GITHUB_ENV
 
-      - name: Runtime dependencies (must not need the VC++ redistributable)
+      - name: Runtime dependencies (OpenAL32.dll must be a delay-load import)
         shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
-          & $dumpbin.FullName /dependents build_libretro\Release\openjkdf2_libretro.dll
+          $out = & $dumpbin.FullName /dependents build_libretro\Release\openjkdf2_libretro.dll
+          $out
+          $text = $out -join "`n"
+          $i = $text.IndexOf("delay load dependencies")
+          if ($i -lt 0) { throw "no delay-load section: OpenAL32.dll is an eager import again" }
+          if ($text.Substring(0, $i) -match "OpenAL32.dll") { throw "OpenAL32.dll is an eager import; it must be delay-loaded (see plat_libretro.cmake)" }
+          if ($text.Substring($i) -notmatch "OpenAL32.dll") { throw "OpenAL32.dll is not in the delay-load section" }
 
       - name: Upload core
         uses: actions/upload-artifact@v4

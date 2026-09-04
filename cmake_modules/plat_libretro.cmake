@@ -43,7 +43,8 @@ macro(plat_initialize)
 
     # The core's own version, independent of the engine's. library_version
     # (retro_get_system_info) reports this plus the OpenJKDF2 version and
-    # commit it was built from. Bump here and tag libretro-v<version>.
+    # commit it was built from. Bump here (and display_version in
+    # src/Platform/Libretro/openjkdf2_libretro.info) and tag libretro-v<version>.
     set(OPENJKDF2_LIBRETRO_VERSION "0.1.0")
     add_compile_definitions(OPENJKDF2_LIBRETRO_VERSION=\"${OPENJKDF2_LIBRETRO_VERSION}\")
 
@@ -134,13 +135,24 @@ macro(plat_link_and_package)
             $<TARGET_FILE_DIR:${BIN_NAME}>/openjkdf2_libretro.info
     )
 
-    # The core's runtime DLL deps must sit next to it (RetroArch loads the core
-    # from its cores dir; document copying these alongside).
+    # OpenAL32.dll ships beside the core and is DELAY-LOADED so the core can
+    # choose which OpenAL32.dll it gets (core_preload_openal in
+    # libretro_core.c loads the sibling by full path before the first al*
+    # call). Frontends load a core with a plain LoadLibrary, and Windows then
+    # resolves the core's imports from the frontend's own directory, System32,
+    # the cwd and PATH -- never from the core's directory. An eager import
+    # therefore either failed the core load outright (no OpenAL anywhere) or
+    # bound the legacy Creative router from System32, which lacks
+    # ALC_SOFT_loopback, so audio bypassed the frontend.
     if(TARGET_USE_OPENAL)
+        target_link_libraries(${BIN_NAME} PRIVATE delayimp)
+        target_link_options(${BIN_NAME} PRIVATE /DELAYLOAD:OpenAL32.dll)
         add_custom_command(
             TARGET ${BIN_NAME}
             POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/openal/bin/OpenAL32.dll ${PROJECT_BINARY_DIR}
+            COMMAND ${CMAKE_COMMAND} -E copy
+                ${PROJECT_BINARY_DIR}/openal/bin/OpenAL32.dll
+                $<TARGET_FILE_DIR:${BIN_NAME}>/OpenAL32.dll
         )
     endif()
 endmacro()

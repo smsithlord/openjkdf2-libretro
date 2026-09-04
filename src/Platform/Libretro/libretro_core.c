@@ -1631,9 +1631,56 @@ RETRO_API void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { g_c
 RETRO_API void retro_set_input_poll(retro_input_poll_t cb) { g_core.input_poll_cb = cb; }
 RETRO_API void retro_set_input_state(retro_input_state_t cb) { g_core.input_state_cb = cb; }
 
+#ifdef _WIN32
+/* OpenAL32.dll is delay-loaded (/DELAYLOAD, plat_libretro.cmake) so the core
+ * can pick WHICH OpenAL32.dll it gets. Frontends load a core with a plain
+ * LoadLibrary, and Windows resolves a core's imports from the frontend's own
+ * directory, System32, the cwd and PATH -- never from the core's directory.
+ * Left to that search, a machine with the legacy Creative router in System32
+ * hands us an OpenAL without ALC_SOFT_loopback (audio then bypasses the
+ * frontend; see stdSound.c), and a machine with no OpenAL at all fails the
+ * core load with no message. So, before the first al* call, load the OpenAL
+ * Soft that ships beside the core by full path; the delay-load helper then
+ * resolves "OpenAL32.dll" to that already-loaded module by name. If it is not
+ * beside the core, fall back to the default search and say so in the log. */
+static HMODULE s_openal_preload;
+static void core_preload_openal(void)
+{
+    HMODULE self = NULL;
+    wchar_t path[MAX_PATH + 16];
+    wchar_t* slash;
+    DWORD n;
+
+    if (s_openal_preload)
+        return;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                            | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)&core_preload_openal, &self))
+        return;
+    n = GetModuleFileNameW(self, path, MAX_PATH);
+    if (!n || n >= MAX_PATH)
+        return;
+    slash = wcsrchr(path, L'\\');
+    if (!slash)
+        return;
+    wcscpy(slash + 1, L"OpenAL32.dll");
+    s_openal_preload = LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (s_openal_preload)
+        core_log(RETRO_LOG_INFO, "OpenAL32.dll: loaded %ls\n", path);
+    else
+        core_log(RETRO_LOG_WARN,
+                 "OpenAL32.dll is not beside the core (%ls, error %lu); falling back to the "
+                 "system search. Audio may bypass the frontend or fail. Keep OpenAL32.dll "
+                 "next to openjkdf2_libretro.dll.\n", path, (unsigned long)GetLastError());
+}
+#endif
+
 RETRO_API void retro_init(void)
 {
     g_core.port0_device = RETRO_DEVICE_KEYBOARD;
+#ifdef _WIN32
+    core_preload_openal();
+#endif
 }
 
 RETRO_API void retro_deinit(void)
