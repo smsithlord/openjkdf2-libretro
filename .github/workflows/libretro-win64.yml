@@ -42,7 +42,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install cogapp
-          python -m cogapp --version
+          python -c "import cogapp; print(cogapp.__file__)"
           "PYTHON_EXE=$((Get-Command python).Source)" >> $env:GITHUB_ENV
 
       - name: Configure
