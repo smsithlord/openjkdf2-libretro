@@ -12,6 +12,12 @@ on:
     branches: [ master ]
   workflow_dispatch:
 
+# The Release step creates a GitHub release with the built-in token, which
+# is read-only by default on a new repository. (The first tag build failed
+# here with "Resource not accessible by integration".)
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-2022
